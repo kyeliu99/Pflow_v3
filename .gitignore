@@ -1,0 +1,16 @@
+# Go
+bin/
+*.log
+
+# Node
+node_modules/
+apps/frontend/node_modules/
+apps/frontend/dist/
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Env
+.env
