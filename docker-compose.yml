@@ -14,7 +14,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   zookeeper:
-    image: bitnami/zookeeper:3.9.2
+    image: bitnami/zookeeper:3.9.1
     restart: unless-stopped
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"

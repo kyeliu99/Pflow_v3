@@ -107,7 +107,7 @@ npm run dev
 
 ## Docker Compose 示例
 
-以下 compose 片段演示如何在本地拉起依赖组件：
+以下 compose 片段演示如何在本地拉起依赖组件（Bitnami 镜像标签会定期清理，如遇拉取失败，可在 [Docker Hub](https://hub.docker.com/r/bitnami/zookeeper/tags) 上选择最新可用的 `3.9.x` 版本并替换）：
 
 ```yaml
 version: "3.9"
@@ -121,7 +121,7 @@ services:
     ports:
       - "5432:5432"
   zookeeper:
-    image: bitnami/zookeeper:3.9.2
+    image: bitnami/zookeeper:3.9.1
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"
     ports:
