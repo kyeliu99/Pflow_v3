@@ -1,0 +1,8 @@
+use (
+    ./services/gateway
+    ./services/identity
+    ./services/workflow
+    ./services/form
+    ./services/ticket
+    ./libs/shared
+)
