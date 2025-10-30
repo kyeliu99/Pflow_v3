@@ -39,26 +39,32 @@ services/
 
 项目根目录提供 `docker-compose.yml`（见下文示例）用于拉起依赖服务。
 
+- 默认 compose 会一次性拉起 PostgreSQL、Zookeeper、Kafka 与 Camunda：
+
 ```bash
-docker compose up -d postgres kafka camunda
+docker compose up -d postgres zookeeper kafka camunda
 ```
 
 - PostgreSQL 暴露在 `5432`
-- Kafka 暴露在 `9092`
-- Camunda/Zeebe 网关暴露在 `8088`
+- Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
+- Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
+- 如果某个容器启动失败，可通过 `docker compose logs <service>` 查看原因
 
 ### 3. 配置环境变量
 
-复制 `.env.example` 到各服务根目录或以环境变量形式注入：
+将示例配置复制为仓库根目录的 `.env`（一次即可）：
 
+```bash
+cp .env.example .env
 ```
-SERVICE_NAME=gateway
-HTTP_PORT=8080
-POSTGRES_DSN=postgres://pflow:pflow@localhost:5432/pflow?sslmode=disable
-KAFKA_BROKERS=localhost:9092
-KAFKA_TOPIC=pflow-events
-CAMUNDA_URL=0.0.0.0:26500
+
+所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。也可以在运行命令前临时注入或覆盖变量，例如：
+
+```bash
+SERVICE_NAME=gateway HTTP_PORT=8080 go run ./cmd/main.go
 ```
+
+如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
 ### 4. 启动微服务
 
@@ -114,30 +120,35 @@ services:
       POSTGRES_DB: pflow
     ports:
       - "5432:5432"
-  kafka:
-    image: bitnami/kafka:3.6.1
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_LISTENERS: PLAINTEXT://:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
   zookeeper:
     image: bitnami/zookeeper:3.9.2
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"
     ports:
       - "2181:2181"
+  kafka:
+    image: bitnami/kafka:3.6.1
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
   camunda:
     image: camunda/zeebe:8.3.0
     environment:
       ZEEBE_LOG_LEVEL: info
+      ZEEBE_GATEWAY_NETWORK_HOST: 0.0.0.0
     ports:
-      - "8088:8080"
       - "26500:26500"
+      - "8088:8080"
 ```
 
 > 可根据需要扩展 compose 以包含 Jaeger、Prometheus 等观测组件。

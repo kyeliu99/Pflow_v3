@@ -12,9 +12,10 @@ import (
 
 var (
 	writerOnce sync.Once
-	readerOnce sync.Once
 	writer     *kafka.Writer
-	reader     *kafka.Reader
+
+	readerMu sync.Mutex
+	readers  = map[string]*kafka.Reader{}
 )
 
 // Writer returns a singleton Kafka writer.
@@ -32,16 +33,23 @@ func Writer() *kafka.Writer {
 
 // Reader returns a singleton Kafka reader.
 func Reader(groupID string) *kafka.Reader {
-	readerOnce.Do(func() {
-		cfg := config.MustGet()
-		reader = kafka.NewReader(kafka.ReaderConfig{
-			Brokers:  []string{cfg.KafkaBrokers},
-			Topic:    cfg.KafkaTopic,
-			GroupID:  groupID,
-			MinBytes: 1,
-			MaxBytes: 10e6,
-		})
+	readerMu.Lock()
+	defer readerMu.Unlock()
+
+	if r, ok := readers[groupID]; ok {
+		return r
+	}
+
+	cfg := config.MustGet()
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{cfg.KafkaBrokers},
+		Topic:    cfg.KafkaTopic,
+		GroupID:  groupID,
+		MinBytes: 1,
+		MaxBytes: 10e6,
 	})
+	readers[groupID] = reader
+
 	return reader
 }
 
@@ -67,9 +75,12 @@ func Close() {
 			log.Printf("kafka writer close error: %v", err)
 		}
 	}
-	if reader != nil {
-		if err := reader.Close(); err != nil {
-			log.Printf("kafka reader close error: %v", err)
+	readerMu.Lock()
+	defer readerMu.Unlock()
+	for groupID, r := range readers {
+		if err := r.Close(); err != nil {
+			log.Printf("kafka reader close error (%s): %v", groupID, err)
 		}
+		delete(readers, groupID)
 	}
 }
