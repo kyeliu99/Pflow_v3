@@ -5,10 +5,10 @@ services:
     image: ${POSTGRES_IMAGE:-docker.m.daocloud.io/library/postgres:16}
 
   zookeeper:
-    image: ${ZOOKEEPER_IMAGE:-docker.m.daocloud.io/bitnami/zookeeper:3.9.1}
+    image: ${ZOOKEEPER_IMAGE:-docker.m.daocloud.io/bitnami/zookeeper:3.9}
 
   kafka:
-    image: ${KAFKA_IMAGE:-docker.m.daocloud.io/bitnami/kafka:3.7.0}
+    image: ${KAFKA_IMAGE:-docker.m.daocloud.io/bitnami/kafka:3.7}
 
   camunda:
     image: ${CAMUNDA_IMAGE:-docker.m.daocloud.io/camunda/zeebe:8.3.0}

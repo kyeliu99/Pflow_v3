@@ -123,13 +123,13 @@ services:
     ports:
       - "5432:5432"
   zookeeper:
-    image: ${ZOOKEEPER_IMAGE:-bitnami/zookeeper:3.9.1}
+    image: ${ZOOKEEPER_IMAGE:-bitnami/zookeeper:3.9}
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"
     ports:
       - "2181:2181"
   kafka:
-    image: ${KAFKA_IMAGE:-bitnami/kafka:3.7.0}
+    image: ${KAFKA_IMAGE:-bitnami/kafka:3.7}
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
@@ -158,6 +158,7 @@ services:
 ### 解决镜像拉取超时/失败
 
 - **优先检查网络**：错误 `Client.Timeout exceeded while awaiting headers` 通常意味着无法连接 Docker Hub。可先尝试 `docker pull ${ZOOKEEPER_IMAGE}` 验证网络连通性。
+- **使用预拉取脚本**：执行 `./scripts/docker/pull-dependencies.sh` 会按 `.env` 或默认值提前拉取依赖镜像，并在补丁标签不存在时自动回退到次版本号标签（如 `3.9.1 -> 3.9`）。脚本运行成功后再执行 `docker compose up -d postgres zookeeper kafka camunda` 可显著降低首次启动失败的概率。
 - **开箱即用的镜像加速 compose 文件**：仓库提供 `docker-compose.mirror.yml`，预置了 [DaoCloud 镜像服务](https://docker.m.daocloud.io) 的镜像地址，可直接配合基础 compose 文件使用：
 
   ```bash
@@ -167,9 +168,9 @@ services:
 
   如仍需切换到企业内部仓库，可在执行命令前设置环境变量（例如 `POSTGRES_IMAGE`），该覆盖文件同样会读取这些变量。
 - **使用镜像加速器**：在 `~/.docker/config.json` 中增加 `"registry-mirrors": ["https://registry.docker-cn.com", "https://<你的镜像服务域名>"]`，或使用企业内网镜像仓库。
-- **覆盖镜像地址**：根据 `.env.example` 添加 `ZOOKEEPER_IMAGE=<your-registry>/bitnami/zookeeper:3.9.1` 等变量，重新执行 `docker compose up -d` 即可改用自定义仓库。
+- **覆盖镜像地址**：根据 `.env.example` 添加 `ZOOKEEPER_IMAGE=<your-registry>/bitnami/zookeeper:3.9` 等变量，重新执行 `docker compose up -d` 即可改用自定义仓库。
 - **手动预拉取**：对网络较慢的环境，可提前运行 `docker pull` 将所需镜像拉取到本地，再执行 compose。
-- **确认镜像标签是否存在**：Bitnami 会定期下线旧补丁版本，例如 `bitnami/kafka:3.6.1`。在启动前可通过 `docker manifest inspect bitnami/kafka:3.7.0` 或访问镜像仓库标签页确认最新可用版本，并在 `.env` 中调整 `KAFKA_IMAGE`。
+- **确认镜像标签是否存在**：Bitnami 会定期下线旧补丁版本（例如 `bitnami/kafka:3.6.1`）。为降低风险，本仓库默认使用带次版本号的长期标签（如 `bitnami/zookeeper:3.9`、`bitnami/kafka:3.7`）。你可以在启动前运行 `docker manifest inspect <image>` 或访问镜像仓库标签页确认可用版本，再在 `.env` 中调整 `*_IMAGE` 变量。
 
 ## 目录内说明
 
