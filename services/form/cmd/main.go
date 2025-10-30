@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/services/form/internal/form"
+	"github.com/pflow/form/internal/form"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -23,8 +23,7 @@ func main() {
 	repository := form.NewRepository(db)
 
 	server := httpx.New()
-	api := server.Engine.Group("/forms")
-	form.RegisterRoutes(api, repository)
+	form.RegisterRoutes(server.Router, repository)
 
 	port := cfg.ResolveHTTPPort("8081")
 	addr := fmt.Sprintf(":%s", port)

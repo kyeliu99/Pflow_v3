@@ -1,25 +1,35 @@
 package user
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"net/mail"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
+
+	"github.com/pflow/shared/httpx"
 )
 
 // RegisterRoutes mounts identity handlers on the router.
-func RegisterRoutes(router gin.IRouter, repo *Repository) {
-	router.GET("/users", listUsersHandler(repo))
-	router.POST("/users", createUserHandler(repo))
-	router.GET("/users/:id", getUserHandler(repo))
-	router.PUT("/users/:id", updateUserHandler(repo))
-	router.DELETE("/users/:id", deleteUserHandler(repo))
+func RegisterRoutes(router chi.Router, repo *Repository) {
+	router.Route("/users", func(r chi.Router) {
+		r.Get("/", listUsersHandler(repo))
+		r.Post("/", createUserHandler(repo))
+		r.Route("/{id}", func(r chi.Router) {
+			r.Get("/", getUserHandler(repo))
+			r.Put("/", updateUserHandler(repo))
+			r.Delete("/", deleteUserHandler(repo))
+		})
+	})
 }
 
 type createUserRequest struct {
-	Name  string `json:"name" binding:"required,min=1"`
-	Email string `json:"email" binding:"required,email"`
-	Role  string `json:"role" binding:"required,min=2"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
 }
 
 type updateUserRequest struct {
@@ -28,14 +38,14 @@ type updateUserRequest struct {
 	Role  *string `json:"role"`
 }
 
-func listUsersHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		role := c.Query("role")
-		search := c.Query("search")
+func listUsersHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		role := r.URL.Query().Get("role")
+		search := r.URL.Query().Get("search")
 
-		users, err := repo.List(c.Request.Context(), role, search)
+		users, err := repo.List(r.Context(), role, search)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -44,101 +54,154 @@ func listUsersHandler(repo *Repository) gin.HandlerFunc {
 			items = append(items, entity.ToDTO())
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": items})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": items})
 	}
 }
 
-func createUserHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func createUserHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		var payload createUserRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := decodeJSON(r, &payload); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		name := strings.TrimSpace(payload.Name)
+		email := strings.ToLower(strings.TrimSpace(payload.Email))
+		role := strings.TrimSpace(payload.Role)
+
+		if name == "" {
+			httpx.Error(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		if email == "" {
+			httpx.Error(w, http.StatusBadRequest, "email is required")
+			return
+		}
+		if _, err := mail.ParseAddress(email); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "email is invalid")
+			return
+		}
+		if role == "" {
+			httpx.Error(w, http.StatusBadRequest, "role is required")
 			return
 		}
 
 		entity := &User{
-			Name:  strings.TrimSpace(payload.Name),
-			Email: strings.ToLower(strings.TrimSpace(payload.Email)),
-			Role:  strings.TrimSpace(payload.Role),
+			Name:  name,
+			Email: email,
+			Role:  role,
 		}
 
-		if err := repo.Create(c.Request.Context(), entity); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if err := repo.Create(r.Context(), entity); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusCreated, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusCreated, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func getUserHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		entity, err := repo.Find(c.Request.Context(), id)
+func getUserHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		entity, err := repo.Find(r.Context(), id)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+				httpx.Error(w, http.StatusNotFound, "user not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func updateUserHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
+func updateUserHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
 		var payload updateUserRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := decodeJSON(r, &payload); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		updates := make(map[string]any)
 		if payload.Name != nil {
-			updates["name"] = strings.TrimSpace(*payload.Name)
+			name := strings.TrimSpace(*payload.Name)
+			if name == "" {
+				httpx.Error(w, http.StatusBadRequest, "name cannot be empty")
+				return
+			}
+			updates["name"] = name
 		}
 		if payload.Email != nil {
-			updates["email"] = strings.ToLower(strings.TrimSpace(*payload.Email))
+			email := strings.ToLower(strings.TrimSpace(*payload.Email))
+			if email == "" {
+				httpx.Error(w, http.StatusBadRequest, "email cannot be empty")
+				return
+			}
+			if _, err := mail.ParseAddress(email); err != nil {
+				httpx.Error(w, http.StatusBadRequest, "email is invalid")
+				return
+			}
+			updates["email"] = email
 		}
 		if payload.Role != nil {
-			updates["role"] = strings.TrimSpace(*payload.Role)
+			role := strings.TrimSpace(*payload.Role)
+			if role == "" {
+				httpx.Error(w, http.StatusBadRequest, "role cannot be empty")
+				return
+			}
+			updates["role"] = role
 		}
 
 		if len(updates) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no updates provided"})
+			httpx.Error(w, http.StatusBadRequest, "no updates provided")
 			return
 		}
 
-		entity, err := repo.Update(c.Request.Context(), id, updates)
+		entity, err := repo.Update(r.Context(), id, updates)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+				httpx.Error(w, http.StatusNotFound, "user not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func deleteUserHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		if err := repo.Delete(c.Request.Context(), id); err != nil {
+func deleteUserHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if err := repo.Delete(r.Context(), id); err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+				httpx.Error(w, http.StatusNotFound, "user not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.Status(http.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func decodeJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is empty")
+		}
+		return err
+	}
+	return nil
 }

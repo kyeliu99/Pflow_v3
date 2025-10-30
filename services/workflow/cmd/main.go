@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/services/workflow/internal/workflow"
+	"github.com/pflow/workflow/internal/workflow"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -23,8 +23,7 @@ func main() {
 	repository := workflow.NewRepository(db)
 
 	server := httpx.New()
-	api := server.Engine.Group("/workflows")
-	workflow.RegisterRoutes(api, repository)
+	workflow.RegisterRoutes(server.Router, repository)
 
 	port := cfg.ResolveHTTPPort("8084")
 	addr := fmt.Sprintf(":%s", port)

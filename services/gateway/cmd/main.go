@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/httpx"
@@ -43,14 +43,13 @@ func main() {
 	gw := newGateway(cfg)
 
 	server := httpx.New()
-	observability.RegisterMetricsEndpoint(server.Engine)
+	observability.RegisterMetricsEndpoint(server.Router)
 
-	server.Engine.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": gw.serviceName})
+	server.Router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "service": gw.serviceName})
 	})
 
-	api := server.Engine.Group("/api")
-	gw.registerRoutes(api)
+	server.Router.Route("/api", gw.registerRoutes)
 
 	port := cfg.ResolveHTTPPort("8080")
 	addr := fmt.Sprintf(":%s", port)
@@ -61,162 +60,162 @@ func main() {
 	}
 }
 
-func (g *gateway) registerRoutes(router gin.IRouter) {
-	router.GET("/forms", g.proxy(http.MethodGet, func(c *gin.Context) string {
+func (g *gateway) registerRoutes(router chi.Router) {
+	router.Get("/forms", g.proxy(http.MethodGet, func(r *http.Request) string {
 		return g.formBase + "/forms"
 	}))
-	router.POST("/forms", g.proxy(http.MethodPost, func(c *gin.Context) string {
+	router.Post("/forms", g.proxy(http.MethodPost, func(r *http.Request) string {
 		return g.formBase + "/forms"
 	}))
-	router.GET("/forms/:id", g.proxy(http.MethodGet, func(c *gin.Context) string {
-		return g.formBase + "/forms/" + c.Param("id")
+	router.Get("/forms/{id}", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.formBase + "/forms/" + chi.URLParam(r, "id")
 	}))
-	router.PUT("/forms/:id", g.proxy(http.MethodPut, func(c *gin.Context) string {
-		return g.formBase + "/forms/" + c.Param("id")
+	router.Put("/forms/{id}", g.proxy(http.MethodPut, func(r *http.Request) string {
+		return g.formBase + "/forms/" + chi.URLParam(r, "id")
 	}))
-	router.DELETE("/forms/:id", g.proxy(http.MethodDelete, func(c *gin.Context) string {
-		return g.formBase + "/forms/" + c.Param("id")
+	router.Delete("/forms/{id}", g.proxy(http.MethodDelete, func(r *http.Request) string {
+		return g.formBase + "/forms/" + chi.URLParam(r, "id")
 	}))
 
-	router.GET("/tickets", g.proxy(http.MethodGet, func(c *gin.Context) string {
+	router.Get("/tickets", g.proxy(http.MethodGet, func(r *http.Request) string {
 		return g.ticketBase + "/tickets"
 	}))
-	router.POST("/tickets", g.proxy(http.MethodPost, func(c *gin.Context) string {
+	router.Post("/tickets", g.proxy(http.MethodPost, func(r *http.Request) string {
 		return g.ticketBase + "/tickets"
 	}))
-	router.GET("/tickets/:id", g.proxy(http.MethodGet, func(c *gin.Context) string {
-		return g.ticketBase + "/tickets/" + c.Param("id")
+	router.Get("/tickets/{id}", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/" + chi.URLParam(r, "id")
 	}))
-	router.PATCH("/tickets/:id", g.proxy(http.MethodPatch, func(c *gin.Context) string {
-		return g.ticketBase + "/tickets/" + c.Param("id")
+	router.Patch("/tickets/{id}", g.proxy(http.MethodPatch, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/" + chi.URLParam(r, "id")
 	}))
-	router.DELETE("/tickets/:id", g.proxy(http.MethodDelete, func(c *gin.Context) string {
-		return g.ticketBase + "/tickets/" + c.Param("id")
+	router.Delete("/tickets/{id}", g.proxy(http.MethodDelete, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/" + chi.URLParam(r, "id")
 	}))
-	router.POST("/tickets/:id/resolve", g.proxy(http.MethodPost, func(c *gin.Context) string {
-		return g.ticketBase + "/tickets/" + c.Param("id") + "/resolve"
+	router.Post("/tickets/{id}/resolve", g.proxy(http.MethodPost, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/" + chi.URLParam(r, "id") + "/resolve"
 	}))
 
-	router.GET("/users", g.proxy(http.MethodGet, func(c *gin.Context) string {
+	router.Get("/users", g.proxy(http.MethodGet, func(r *http.Request) string {
 		return g.identityBase + "/identity/users"
 	}))
-	router.POST("/users", g.proxy(http.MethodPost, func(c *gin.Context) string {
+	router.Post("/users", g.proxy(http.MethodPost, func(r *http.Request) string {
 		return g.identityBase + "/identity/users"
 	}))
-	router.GET("/users/:id", g.proxy(http.MethodGet, func(c *gin.Context) string {
-		return g.identityBase + "/identity/users/" + c.Param("id")
+	router.Get("/users/{id}", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.identityBase + "/identity/users/" + chi.URLParam(r, "id")
 	}))
-	router.PUT("/users/:id", g.proxy(http.MethodPut, func(c *gin.Context) string {
-		return g.identityBase + "/identity/users/" + c.Param("id")
+	router.Put("/users/{id}", g.proxy(http.MethodPut, func(r *http.Request) string {
+		return g.identityBase + "/identity/users/" + chi.URLParam(r, "id")
 	}))
-	router.DELETE("/users/:id", g.proxy(http.MethodDelete, func(c *gin.Context) string {
-		return g.identityBase + "/identity/users/" + c.Param("id")
-	}))
-
-	router.GET("/workflows", g.proxy(http.MethodGet, func(c *gin.Context) string {
-		return g.workflowBase + "/workflows"
-	}))
-	router.POST("/workflows", g.proxy(http.MethodPost, func(c *gin.Context) string {
-		return g.workflowBase + "/workflows"
-	}))
-	router.GET("/workflows/:id", g.proxy(http.MethodGet, func(c *gin.Context) string {
-		return g.workflowBase + "/workflows/" + c.Param("id")
-	}))
-	router.PUT("/workflows/:id", g.proxy(http.MethodPut, func(c *gin.Context) string {
-		return g.workflowBase + "/workflows/" + c.Param("id")
-	}))
-	router.DELETE("/workflows/:id", g.proxy(http.MethodDelete, func(c *gin.Context) string {
-		return g.workflowBase + "/workflows/" + c.Param("id")
-	}))
-	router.POST("/workflows/:id/publish", g.proxy(http.MethodPost, func(c *gin.Context) string {
-		return g.workflowBase + "/workflows/" + c.Param("id") + "/publish"
+	router.Delete("/users/{id}", g.proxy(http.MethodDelete, func(r *http.Request) string {
+		return g.identityBase + "/identity/users/" + chi.URLParam(r, "id")
 	}))
 
-	router.GET("/overview", g.overviewHandler)
+	router.Get("/workflows", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.workflowBase + "/workflows"
+	}))
+	router.Post("/workflows", g.proxy(http.MethodPost, func(r *http.Request) string {
+		return g.workflowBase + "/workflows"
+	}))
+	router.Get("/workflows/{id}", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.workflowBase + "/workflows/" + chi.URLParam(r, "id")
+	}))
+	router.Put("/workflows/{id}", g.proxy(http.MethodPut, func(r *http.Request) string {
+		return g.workflowBase + "/workflows/" + chi.URLParam(r, "id")
+	}))
+	router.Delete("/workflows/{id}", g.proxy(http.MethodDelete, func(r *http.Request) string {
+		return g.workflowBase + "/workflows/" + chi.URLParam(r, "id")
+	}))
+	router.Post("/workflows/{id}/publish", g.proxy(http.MethodPost, func(r *http.Request) string {
+		return g.workflowBase + "/workflows/" + chi.URLParam(r, "id") + "/publish"
+	}))
+
+	router.Get("/overview", g.overviewHandler)
 }
 
-func (g *gateway) proxy(method string, target func(*gin.Context) string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		g.forward(c, method, target(c))
+func (g *gateway) proxy(method string, target func(*http.Request) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		g.forward(w, r, method, target(r))
 	}
 }
 
-func (g *gateway) forward(c *gin.Context, method, target string) {
+func (g *gateway) forward(w http.ResponseWriter, r *http.Request, method, target string) {
 	var body io.Reader
 	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
-		rawBody, err := io.ReadAll(c.Request.Body)
+		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+			httpx.Error(w, http.StatusBadRequest, "failed to read request body")
 			return
 		}
 		body = bytes.NewReader(rawBody)
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), method, target, body)
+	req, err := http.NewRequestWithContext(r.Context(), method, target, body)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to build upstream request: %v", err)})
+		httpx.Error(w, http.StatusInternalServerError, fmt.Sprintf("failed to build upstream request: %v", err))
 		return
 	}
 
 	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
-		if contentType := c.GetHeader("Content-Type"); contentType != "" {
+		if contentType := r.Header.Get("Content-Type"); contentType != "" {
 			req.Header.Set("Content-Type", contentType)
 		}
 	}
-	req.URL.RawQuery = c.Request.URL.RawQuery
+	req.URL.RawQuery = r.URL.RawQuery
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("upstream request failed: %v", err)})
+		httpx.Error(w, http.StatusBadGateway, fmt.Sprintf("upstream request failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	for key := range c.Writer.Header() {
-		c.Writer.Header().Del(key)
+	for key := range w.Header() {
+		w.Header().Del(key)
 	}
 	for key, values := range resp.Header {
 		if strings.EqualFold(key, "Content-Length") {
 			continue
 		}
 		for _, value := range values {
-			c.Writer.Header().Add(key, value)
+			w.Header().Add(key, value)
 		}
 	}
 
-	c.Status(resp.StatusCode)
+	w.WriteHeader(resp.StatusCode)
 	if resp.StatusCode == http.StatusNoContent {
 		return
 	}
-	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+	if _, err := io.Copy(w, resp.Body); err != nil {
 		log.Printf("gateway: failed to copy response body: %v", err)
 	}
 }
 
-func (g *gateway) overviewHandler(c *gin.Context) {
-	ctx := c.Request.Context()
+func (g *gateway) overviewHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 
 	forms, err := g.fetchList(ctx, g.formBase+"/forms")
 	if err != nil {
-		g.renderUpstreamError(c, err)
+		g.renderUpstreamError(w, err)
 		return
 	}
 
 	tickets, err := g.fetchList(ctx, g.ticketBase+"/tickets")
 	if err != nil {
-		g.renderUpstreamError(c, err)
+		g.renderUpstreamError(w, err)
 		return
 	}
 
 	users, err := g.fetchList(ctx, g.identityBase+"/identity/users")
 	if err != nil {
-		g.renderUpstreamError(c, err)
+		g.renderUpstreamError(w, err)
 		return
 	}
 
 	workflows, err := g.fetchList(ctx, g.workflowBase+"/workflows")
 	if err != nil {
-		g.renderUpstreamError(c, err)
+		g.renderUpstreamError(w, err)
 		return
 	}
 
@@ -234,19 +233,19 @@ func (g *gateway) overviewHandler(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"forms": gin.H{
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"forms": map[string]any{
 				"total": len(forms),
 			},
-			"tickets": gin.H{
+			"tickets": map[string]any{
 				"total":    len(tickets),
 				"byStatus": ticketStatus,
 			},
-			"users": gin.H{
+			"users": map[string]any{
 				"total": len(users),
 			},
-			"workflows": gin.H{
+			"workflows": map[string]any{
 				"total":     len(workflows),
 				"published": publishedWorkflows,
 			},
@@ -280,9 +279,9 @@ func (g *gateway) fetchList(ctx context.Context, target string) ([]map[string]an
 	return payload.Data, nil
 }
 
-func (g *gateway) renderUpstreamError(c *gin.Context, err error) {
+func (g *gateway) renderUpstreamError(w http.ResponseWriter, err error) {
 	log.Printf("gateway: overview failed: %v", err)
-	c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+	httpx.Error(w, http.StatusBadGateway, err.Error())
 }
 
 func trimTrailingSlash(value string) string {

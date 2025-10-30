@@ -1,11 +1,17 @@
 package ticket
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"gorm.io/datatypes"
+
+	"github.com/pflow/shared/httpx"
 )
 
 var allowedStatuses = map[string]struct{}{
@@ -16,19 +22,23 @@ var allowedStatuses = map[string]struct{}{
 }
 
 // RegisterRoutes mounts the ticket handlers.
-func RegisterRoutes(router gin.IRouter, repo *Repository) {
-	router.GET("", listTicketsHandler(repo))
-	router.POST("", createTicketHandler(repo))
-	router.GET(":id", getTicketHandler(repo))
-	router.PATCH(":id", updateTicketHandler(repo))
-	router.DELETE(":id", deleteTicketHandler(repo))
-	router.POST(":id/resolve", resolveTicketHandler(repo))
+func RegisterRoutes(router chi.Router, repo *Repository) {
+	router.Route("/tickets", func(r chi.Router) {
+		r.Get("/", listTicketsHandler(repo))
+		r.Post("/", createTicketHandler(repo))
+		r.Route("/{id}", func(r chi.Router) {
+			r.Get("/", getTicketHandler(repo))
+			r.Patch("/", updateTicketHandler(repo))
+			r.Delete("/", deleteTicketHandler(repo))
+			r.Post("/resolve", resolveTicketHandler(repo))
+		})
+	})
 }
 
 type createTicketRequest struct {
-	Title      string         `json:"title" binding:"required,min=3"`
+	Title      string         `json:"title"`
 	Status     string         `json:"status"`
-	FormID     string         `json:"formId" binding:"required,uuid4"`
+	FormID     string         `json:"formId"`
 	AssigneeID string         `json:"assigneeId"`
 	Priority   string         `json:"priority"`
 	Metadata   map[string]any `json:"metadata"`
@@ -42,14 +52,14 @@ type updateTicketRequest struct {
 	Metadata   map[string]any `json:"metadata"`
 }
 
-func listTicketsHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		status := c.Query("status")
-		assignee := c.Query("assigneeId")
+func listTicketsHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status := strings.TrimSpace(r.URL.Query().Get("status"))
+		assignee := strings.TrimSpace(r.URL.Query().Get("assigneeId"))
 
-		tickets, err := repo.List(c.Request.Context(), status, assignee)
+		tickets, err := repo.List(r.Context(), status, assignee)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -58,15 +68,27 @@ func listTicketsHandler(repo *Repository) gin.HandlerFunc {
 			items = append(items, entity.ToDTO())
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": items})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": items})
 	}
 }
 
-func createTicketHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func createTicketHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		var payload createTicketRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := decodeJSON(r, &payload); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		title := strings.TrimSpace(payload.Title)
+		if len(title) < 3 {
+			httpx.Error(w, http.StatusBadRequest, "title must be at least 3 characters")
+			return
+		}
+
+		formID := strings.TrimSpace(payload.FormID)
+		if _, err := uuid.Parse(formID); err != nil {
+			httpx.Error(w, http.StatusBadRequest, "formId must be a valid UUID")
 			return
 		}
 
@@ -75,14 +97,14 @@ func createTicketHandler(repo *Repository) gin.HandlerFunc {
 			status = StatusOpen
 		}
 		if !isValidStatus(status) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			httpx.Error(w, http.StatusBadRequest, "invalid status")
 			return
 		}
 
 		entity := &Ticket{
-			Title:      strings.TrimSpace(payload.Title),
+			Title:      title,
 			Status:     status,
-			FormID:     strings.TrimSpace(payload.FormID),
+			FormID:     formID,
 			AssigneeID: strings.TrimSpace(payload.AssigneeID),
 		}
 		if payload.Priority != "" {
@@ -92,49 +114,54 @@ func createTicketHandler(repo *Repository) gin.HandlerFunc {
 			entity.Metadata = datatypes.JSONMap(payload.Metadata)
 		}
 
-		if err := repo.Create(c.Request.Context(), entity); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if err := repo.Create(r.Context(), entity); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusCreated, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusCreated, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func getTicketHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		entity, err := repo.Find(c.Request.Context(), id)
+func getTicketHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		entity, err := repo.Find(r.Context(), id)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "ticket not found"})
+				httpx.Error(w, http.StatusNotFound, "ticket not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func updateTicketHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
+func updateTicketHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
 		var payload updateTicketRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := decodeJSON(r, &payload); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		updates := make(map[string]any)
 		if payload.Title != nil {
-			updates["title"] = strings.TrimSpace(*payload.Title)
+			title := strings.TrimSpace(*payload.Title)
+			if len(title) < 3 {
+				httpx.Error(w, http.StatusBadRequest, "title must be at least 3 characters")
+				return
+			}
+			updates["title"] = title
 		}
 		if payload.Status != nil {
 			status := strings.ToLower(strings.TrimSpace(*payload.Status))
 			if !isValidStatus(status) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+				httpx.Error(w, http.StatusBadRequest, "invalid status")
 				return
 			}
 			updates["status"] = status
@@ -150,57 +177,70 @@ func updateTicketHandler(repo *Repository) gin.HandlerFunc {
 		}
 
 		if len(updates) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no updates provided"})
+			httpx.Error(w, http.StatusBadRequest, "no updates provided")
 			return
 		}
 
-		entity, err := repo.Update(c.Request.Context(), id, updates)
+		entity, err := repo.Update(r.Context(), id, updates)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "ticket not found"})
+				httpx.Error(w, http.StatusNotFound, "ticket not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func deleteTicketHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		if err := repo.Delete(c.Request.Context(), id); err != nil {
+func deleteTicketHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if err := repo.Delete(r.Context(), id); err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "ticket not found"})
+				httpx.Error(w, http.StatusNotFound, "ticket not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.Status(http.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func resolveTicketHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		entity, err := repo.Resolve(c.Request.Context(), id)
+func resolveTicketHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		entity, err := repo.Resolve(r.Context(), id)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "ticket not found"})
+				httpx.Error(w, http.StatusNotFound, "ticket not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
 func isValidStatus(status string) bool {
-	_, ok := allowedStatuses[strings.ToLower(status)]
+	_, ok := allowedStatuses[status]
 	return ok
+}
+
+func decodeJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is empty")
+		}
+		return err
+	}
+	return nil
 }

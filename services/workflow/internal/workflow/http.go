@@ -1,26 +1,35 @@
 package workflow
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 	"gorm.io/datatypes"
+
+	"github.com/pflow/shared/httpx"
 )
 
 // RegisterRoutes exposes workflow HTTP endpoints.
-func RegisterRoutes(router gin.IRouter, repo *Repository) {
-	router.GET("", listDefinitionsHandler(repo))
-	router.POST("", createDefinitionHandler(repo))
-	router.GET(":id", getDefinitionHandler(repo))
-	router.PUT(":id", updateDefinitionHandler(repo))
-	router.DELETE(":id", deleteDefinitionHandler(repo))
-	router.POST(":id/publish", publishDefinitionHandler(repo))
+func RegisterRoutes(router chi.Router, repo *Repository) {
+	router.Route("/workflows", func(r chi.Router) {
+		r.Get("/", listDefinitionsHandler(repo))
+		r.Post("/", createDefinitionHandler(repo))
+		r.Route("/{id}", func(r chi.Router) {
+			r.Get("/", getDefinitionHandler(repo))
+			r.Put("/", updateDefinitionHandler(repo))
+			r.Delete("/", deleteDefinitionHandler(repo))
+			r.Post("/publish", publishDefinitionHandler(repo))
+		})
+	})
 }
 
 type createDefinitionRequest struct {
-	Name        string         `json:"name" binding:"required,min=2"`
+	Name        string         `json:"name"`
 	Version     int            `json:"version"`
 	Description string         `json:"description"`
 	Blueprint   map[string]any `json:"blueprint"`
@@ -34,21 +43,21 @@ type updateDefinitionRequest struct {
 	Published   *bool          `json:"published"`
 }
 
-func listDefinitionsHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func listDefinitionsHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		var publishedFilter *bool
-		if value := c.Query("published"); value != "" {
+		if value := strings.TrimSpace(r.URL.Query().Get("published")); value != "" {
 			parsed, err := strconv.ParseBool(value)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid published filter"})
+				httpx.Error(w, http.StatusBadRequest, "invalid published filter")
 				return
 			}
 			publishedFilter = &parsed
 		}
 
-		definitions, err := repo.List(c.Request.Context(), publishedFilter)
+		definitions, err := repo.List(r.Context(), publishedFilter)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -57,15 +66,21 @@ func listDefinitionsHandler(repo *Repository) gin.HandlerFunc {
 			items = append(items, entity.ToDTO())
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": items})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": items})
 	}
 }
 
-func createDefinitionHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func createDefinitionHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		var payload createDefinitionRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := decodeJSON(r, &payload); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		name := strings.TrimSpace(payload.Name)
+		if len(name) < 2 {
+			httpx.Error(w, http.StatusBadRequest, "name must be at least 2 characters")
 			return
 		}
 
@@ -75,7 +90,7 @@ func createDefinitionHandler(repo *Repository) gin.HandlerFunc {
 		}
 
 		entity := &Definition{
-			Name:        strings.TrimSpace(payload.Name),
+			Name:        name,
 			Version:     version,
 			Description: strings.TrimSpace(payload.Description),
 		}
@@ -83,48 +98,53 @@ func createDefinitionHandler(repo *Repository) gin.HandlerFunc {
 			entity.Blueprint = datatypes.JSONMap(payload.Blueprint)
 		}
 
-		if err := repo.Create(c.Request.Context(), entity); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if err := repo.Create(r.Context(), entity); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusCreated, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusCreated, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func getDefinitionHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		entity, err := repo.Find(c.Request.Context(), id)
+func getDefinitionHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		entity, err := repo.Find(r.Context(), id)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				httpx.Error(w, http.StatusNotFound, "workflow not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func updateDefinitionHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
+func updateDefinitionHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
 		var payload updateDefinitionRequest
-		if err := c.ShouldBindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if err := decodeJSON(r, &payload); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		updates := make(map[string]any)
 		if payload.Name != nil {
-			updates["name"] = strings.TrimSpace(*payload.Name)
+			name := strings.TrimSpace(*payload.Name)
+			if len(name) < 2 {
+				httpx.Error(w, http.StatusBadRequest, "name must be at least 2 characters")
+				return
+			}
+			updates["name"] = name
 		}
 		if payload.Version != nil {
 			if *payload.Version <= 0 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "version must be positive"})
+				httpx.Error(w, http.StatusBadRequest, "version must be positive")
 				return
 			}
 			updates["version"] = *payload.Version
@@ -140,53 +160,66 @@ func updateDefinitionHandler(repo *Repository) gin.HandlerFunc {
 		}
 
 		if len(updates) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no updates provided"})
+			httpx.Error(w, http.StatusBadRequest, "no updates provided")
 			return
 		}
 
-		entity, err := repo.Update(c.Request.Context(), id, updates)
+		entity, err := repo.Update(r.Context(), id, updates)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				httpx.Error(w, http.StatusNotFound, "workflow not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
 }
 
-func deleteDefinitionHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		if err := repo.Delete(c.Request.Context(), id); err != nil {
+func deleteDefinitionHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if err := repo.Delete(r.Context(), id); err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				httpx.Error(w, http.StatusNotFound, "workflow not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.Status(http.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func publishDefinitionHandler(repo *Repository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		entity, err := repo.Publish(c.Request.Context(), id)
+func publishDefinitionHandler(repo *Repository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		entity, err := repo.Publish(r.Context(), id)
 		if err != nil {
 			if IsNotFound(err) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				httpx.Error(w, http.StatusNotFound, "workflow not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			httpx.Error(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"data": entity.ToDTO()})
+		httpx.JSON(w, http.StatusOK, map[string]any{"data": entity.ToDTO()})
 	}
+}
+
+func decodeJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is empty")
+		}
+		return err
+	}
+	return nil
 }

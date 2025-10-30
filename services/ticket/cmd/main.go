@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/services/ticket/internal/ticket"
+	"github.com/pflow/ticket/internal/ticket"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -23,8 +23,7 @@ func main() {
 	repository := ticket.NewRepository(db)
 
 	server := httpx.New()
-	api := server.Engine.Group("/tickets")
-	ticket.RegisterRoutes(api, repository)
+	ticket.RegisterRoutes(server.Router, repository)
 
 	port := cfg.ResolveHTTPPort("8083")
 	addr := fmt.Sprintf(":%s", port)

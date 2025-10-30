@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/services/identity/internal/user"
+	"github.com/pflow/identity/internal/user"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -23,7 +23,7 @@ func main() {
 	repository := user.NewRepository(db)
 
 	server := httpx.New()
-	user.RegisterRoutes(server.Engine.Group("/identity"), repository)
+	user.RegisterRoutes(server.Router, repository)
 
 	port := cfg.ResolveHTTPPort("8082")
 	addr := fmt.Sprintf(":%s", port)
