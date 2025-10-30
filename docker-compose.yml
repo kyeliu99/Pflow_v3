@@ -22,7 +22,7 @@ services:
       - "2181:2181"
 
   kafka:
-    image: ${KAFKA_IMAGE:-bitnami/kafka:3.6.1}
+    image: ${KAFKA_IMAGE:-bitnami/kafka:3.7.0}
     restart: unless-stopped
     depends_on:
       - zookeeper

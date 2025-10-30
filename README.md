@@ -129,7 +129,7 @@ services:
     ports:
       - "2181:2181"
   kafka:
-    image: ${KAFKA_IMAGE:-bitnami/kafka:3.6.1}
+    image: ${KAFKA_IMAGE:-bitnami/kafka:3.7.0}
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
@@ -169,6 +169,7 @@ services:
 - **使用镜像加速器**：在 `~/.docker/config.json` 中增加 `"registry-mirrors": ["https://registry.docker-cn.com", "https://<你的镜像服务域名>"]`，或使用企业内网镜像仓库。
 - **覆盖镜像地址**：根据 `.env.example` 添加 `ZOOKEEPER_IMAGE=<your-registry>/bitnami/zookeeper:3.9.1` 等变量，重新执行 `docker compose up -d` 即可改用自定义仓库。
 - **手动预拉取**：对网络较慢的环境，可提前运行 `docker pull` 将所需镜像拉取到本地，再执行 compose。
+- **确认镜像标签是否存在**：Bitnami 会定期下线旧补丁版本，例如 `bitnami/kafka:3.6.1`。在启动前可通过 `docker manifest inspect bitnami/kafka:3.7.0` 或访问镜像仓库标签页确认最新可用版本，并在 `.env` 中调整 `KAFKA_IMAGE`。
 
 ## 目录内说明
 
