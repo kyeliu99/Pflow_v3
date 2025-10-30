@@ -66,6 +66,8 @@ SERVICE_NAME=gateway HTTP_PORT=8080 go run ./cmd/main.go
 
 如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
+> `.env` 中的 `POSTGRES_IMAGE`、`ZOOKEEPER_IMAGE`、`KAFKA_IMAGE`、`CAMUNDA_IMAGE` 变量可按需指向企业私有仓库或镜像加速服务，以避免 Docker Hub 拉取受限。
+
 ### 4. 启动微服务
 
 每个服务独立运行，示例命令：
@@ -107,13 +109,13 @@ npm run dev
 
 ## Docker Compose 示例
 
-以下 compose 片段演示如何在本地拉起依赖组件（Bitnami 镜像标签会定期清理，如遇拉取失败，可在 [Docker Hub](https://hub.docker.com/r/bitnami/zookeeper/tags) 上选择最新可用的 `3.9.x` 版本并替换）：
+以下 compose 片段演示如何在本地拉起依赖组件（镜像名称支持通过根目录 `.env` 中的 `POSTGRES_IMAGE`/`ZOOKEEPER_IMAGE`/`KAFKA_IMAGE`/`CAMUNDA_IMAGE` 覆盖，便于切换到私有仓库或镜像加速源）：
 
 ```yaml
 version: "3.9"
 services:
   postgres:
-    image: postgres:16
+    image: ${POSTGRES_IMAGE:-postgres:16}
     environment:
       POSTGRES_USER: pflow
       POSTGRES_PASSWORD: pflow
@@ -121,13 +123,13 @@ services:
     ports:
       - "5432:5432"
   zookeeper:
-    image: bitnami/zookeeper:3.9.1
+    image: ${ZOOKEEPER_IMAGE:-bitnami/zookeeper:3.9.1}
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"
     ports:
       - "2181:2181"
   kafka:
-    image: bitnami/kafka:3.6.1
+    image: ${KAFKA_IMAGE:-bitnami/kafka:3.6.1}
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
@@ -142,7 +144,7 @@ services:
       - "9092:9092"
       - "29092:29092"
   camunda:
-    image: camunda/zeebe:8.3.0
+    image: ${CAMUNDA_IMAGE:-camunda/zeebe:8.3.0}
     environment:
       ZEEBE_LOG_LEVEL: info
       ZEEBE_GATEWAY_NETWORK_HOST: 0.0.0.0
@@ -152,6 +154,21 @@ services:
 ```
 
 > 可根据需要扩展 compose 以包含 Jaeger、Prometheus 等观测组件。
+
+### 解决镜像拉取超时/失败
+
+- **优先检查网络**：错误 `Client.Timeout exceeded while awaiting headers` 通常意味着无法连接 Docker Hub。可先尝试 `docker pull ${ZOOKEEPER_IMAGE}` 验证网络连通性。
+- **开箱即用的镜像加速 compose 文件**：仓库提供 `docker-compose.mirror.yml`，预置了 [DaoCloud 镜像服务](https://docker.m.daocloud.io) 的镜像地址，可直接配合基础 compose 文件使用：
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.mirror.yml pull
+  docker compose -f docker-compose.yml -f docker-compose.mirror.yml up -d
+  ```
+
+  如仍需切换到企业内部仓库，可在执行命令前设置环境变量（例如 `POSTGRES_IMAGE`），该覆盖文件同样会读取这些变量。
+- **使用镜像加速器**：在 `~/.docker/config.json` 中增加 `"registry-mirrors": ["https://registry.docker-cn.com", "https://<你的镜像服务域名>"]`，或使用企业内网镜像仓库。
+- **覆盖镜像地址**：根据 `.env.example` 添加 `ZOOKEEPER_IMAGE=<your-registry>/bitnami/zookeeper:3.9.1` 等变量，重新执行 `docker compose up -d` 即可改用自定义仓库。
+- **手动预拉取**：对网络较慢的环境，可提前运行 `docker pull` 将所需镜像拉取到本地，再执行 compose。
 
 ## 目录内说明
 

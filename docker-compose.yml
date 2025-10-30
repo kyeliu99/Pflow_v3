@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   postgres:
-    image: postgres:16
+    image: ${POSTGRES_IMAGE:-postgres:16}
     restart: unless-stopped
     environment:
       POSTGRES_USER: pflow
@@ -14,7 +14,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   zookeeper:
-    image: bitnami/zookeeper:3.9.1
+    image: ${ZOOKEEPER_IMAGE:-bitnami/zookeeper:3.9.1}
     restart: unless-stopped
     environment:
       ALLOW_ANONYMOUS_LOGIN: "yes"
@@ -22,7 +22,7 @@ services:
       - "2181:2181"
 
   kafka:
-    image: bitnami/kafka:3.6.1
+    image: ${KAFKA_IMAGE:-bitnami/kafka:3.6.1}
     restart: unless-stopped
     depends_on:
       - zookeeper
@@ -40,7 +40,7 @@ services:
       - "29092:29092"
 
   camunda:
-    image: camunda/zeebe:8.3.0
+    image: ${CAMUNDA_IMAGE:-camunda/zeebe:8.3.0}
     restart: unless-stopped
     environment:
       ZEEBE_LOG_LEVEL: info
