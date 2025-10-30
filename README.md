@@ -45,6 +45,9 @@ services/
 docker compose up -d postgres zookeeper kafka camunda
 ```
 
+- 首次启动 PostgreSQL 会自动执行 `scripts/postgres/init.sql`，确保创建 `pflow` 数据库与登录角色。
+- 如果此前已经启动过旧版本的容器导致卷内缺少该角色，可执行 `docker compose down -v postgres` 清理卷后再启动，或手动进入容器执行 `psql -U postgres -c "CREATE ROLE pflow LOGIN PASSWORD 'pflow';"` 与 `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE pflow TO pflow;"`。
+
 - PostgreSQL 暴露在 `5432`
 - Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
 - Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
@@ -58,11 +61,9 @@ docker compose up -d postgres zookeeper kafka camunda
 cp .env.example .env
 ```
 
-所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。也可以在运行命令前临时注入或覆盖变量，例如：
+所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。
 
-```bash
-SERVICE_NAME=gateway HTTP_PORT=8080 go run ./cmd/main.go
-```
+> `.env.example` 不再预设统一的 `HTTP_PORT`，各服务会在未显式设置时使用推荐端口（Gateway=8080、Form=8081、Identity=8082、Ticket=8083、Workflow=8084）。如需修改，请在运行命令前通过环境变量覆盖，例如 `HTTP_PORT=9000 go run ./cmd/main.go`。
 
 如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
@@ -70,26 +71,17 @@ SERVICE_NAME=gateway HTTP_PORT=8080 go run ./cmd/main.go
 
 ### 4. 启动微服务
 
-每个服务独立运行，示例命令：
+建议在独立终端中分别启动各个服务（默认端口见下表，可按需覆盖 `HTTP_PORT`）：
 
-```bash
-# Gateway
-cd services/gateway && go run ./cmd/main.go
+| 服务 | 目录 | 默认端口 | 启动命令 |
+| --- | --- | --- | --- |
+| API Gateway | `services/gateway` | 8080 | `go run ./cmd/main.go` |
+| Form Service | `services/form` | 8081 | `go run ./cmd/main.go` |
+| Identity Service | `services/identity` | 8082 | `go run ./cmd/main.go` |
+| Ticket Service | `services/ticket` | 8083 | `go run ./cmd/main.go` |
+| Workflow Service | `services/workflow` | 8084 | `go run ./cmd/main.go` |
 
-# 表单服务
-cd services/form && go run ./cmd/main.go
-
-# 工单服务
-cd services/ticket && go run ./cmd/main.go
-
-# 身份服务
-cd services/identity && go run ./cmd/main.go
-
-# 工作流服务（Camunda）
-cd services/workflow && go run ./cmd/main.go
-```
-
-可借助 `air`, `fresh` 等热加载工具提升体验。
+启动顺序建议为：先运行依赖基础设施与 API Gateway，再依次启动领域服务。可借助 `air`、`fresh` 等热加载工具提升开发效率。
 
 ### 5. 前端控制台
 
