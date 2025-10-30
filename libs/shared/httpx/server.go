@@ -5,29 +5,30 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
-// Server wraps a Gin engine with graceful shutdown helpers.
+// Server wraps a Chi router with graceful shutdown helpers.
 type Server struct {
-	Engine     *gin.Engine
+	Router     chi.Router
 	httpServer *http.Server
 }
 
 // New creates a new HTTP server with sane defaults.
 func New() *Server {
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-	engine.Use(gin.Logger())
+	router := chi.NewRouter()
+	router.Use(middleware.Recoverer)
+	router.Use(middleware.Logger)
 
-	return &Server{Engine: engine}
+	return &Server{Router: router}
 }
 
 // Start begins serving HTTP traffic on the provided address.
 func (s *Server) Start(addr string) error {
 	s.httpServer = &http.Server{
 		Addr:    addr,
-		Handler: s.Engine,
+		Handler: s.Router,
 	}
 	return s.httpServer.ListenAndServe()
 }
