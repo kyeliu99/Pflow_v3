@@ -1,21 +1,177 @@
 import axios from "axios";
 
+const API_BASE_URL = import.meta.env.VITE_GATEWAY_URL ?? "http://localhost:8080/api";
+
 export const apiClient = axios.create({
-  baseURL: "/api",
+  baseURL: API_BASE_URL,
   timeout: 10_000,
 });
 
-export interface PaginatedResponse<T> {
+export interface FormSchema {
+  [key: string]: unknown;
+}
+
+export interface Form {
+  id: string;
+  name: string;
+  description: string;
+  schema: FormSchema;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Ticket {
+  id: string;
+  title: string;
+  status: string;
+  formId: string;
+  assigneeId: string;
+  priority: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string;
+}
+
+export interface TicketSubmission {
+  id: string;
+  clientReference: string;
+  status: string;
+  ticketId?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface TicketQueueMetrics {
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  oldestPendingSeconds: number;
+}
+
+export interface WorkflowDefinition {
+  id: string;
+  name: string;
+  version: number;
+  description: string;
+  published: boolean;
+  blueprint: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListResponse<T> {
   data: T[];
-  nextCursor?: string;
+}
+
+export interface ItemResponse<T> {
+  data: T;
+}
+
+export interface OverviewResponse {
+  data: {
+    forms: { total: number };
+    tickets: { total: number; byStatus: Record<string, number> };
+    users: { total: number };
+    workflows: { total: number; published: number };
+  };
+}
+
+export interface CreateFormPayload {
+  name: string;
+  description?: string;
+  schema?: FormSchema;
+}
+
+export interface CreateTicketPayload {
+  title: string;
+  status?: string;
+  formId: string;
+  assigneeId?: string;
+  priority?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateWorkflowPayload {
+  name: string;
+  description?: string;
+  version?: number;
+  blueprint: Record<string, unknown>;
 }
 
 export async function listForms() {
-  const { data } = await apiClient.get<PaginatedResponse<any>>("/forms");
+  const { data } = await apiClient.get<ListResponse<Form>>("/forms");
   return data;
 }
 
-export async function listTickets() {
-  const { data } = await apiClient.get<PaginatedResponse<any>>("/tickets");
+export async function createForm(payload: CreateFormPayload) {
+  const { data } = await apiClient.post<ItemResponse<Form>>("/forms", payload);
+  return data;
+}
+
+export async function listUsers() {
+  const { data } = await apiClient.get<ListResponse<User>>("/users");
+  return data;
+}
+
+export async function listTickets(params?: { status?: string; assigneeId?: string }) {
+  const { data } = await apiClient.get<ListResponse<Ticket>>("/tickets", { params });
+  return data;
+}
+
+export async function createTicket(payload: CreateTicketPayload) {
+  const { data } = await apiClient.post<ItemResponse<Ticket>>("/tickets", payload);
+  return data;
+}
+
+export async function submitTicket(payload: CreateTicketPayload & { clientReference?: string }) {
+  const { data } = await apiClient.post<ItemResponse<TicketSubmission>>("/tickets/submissions", payload);
+  return data;
+}
+
+export async function getTicketSubmission(id: string) {
+  const { data } = await apiClient.get<ItemResponse<TicketSubmission>>(`/tickets/submissions/${id}`);
+  return data;
+}
+
+export async function getTicketQueueMetrics() {
+  const { data } = await apiClient.get<{ data: TicketQueueMetrics }>("/tickets/queue-metrics");
+  return data.data;
+}
+
+export async function resolveTicket(id: string) {
+  const { data } = await apiClient.post<ItemResponse<Ticket>>(`/tickets/${id}/resolve`);
+  return data;
+}
+
+export async function listWorkflows(params?: { published?: boolean }) {
+  const { data } = await apiClient.get<ListResponse<WorkflowDefinition>>("/workflows", { params });
+  return data;
+}
+
+export async function createWorkflow(payload: CreateWorkflowPayload) {
+  const { data } = await apiClient.post<ItemResponse<WorkflowDefinition>>("/workflows", payload);
+  return data;
+}
+
+export async function publishWorkflow(id: string) {
+  const { data } = await apiClient.post<ItemResponse<WorkflowDefinition>>(`/workflows/${id}/publish`);
+  return data;
+}
+
+export async function getOverview() {
+  const { data } = await apiClient.get<OverviewResponse>("/overview");
   return data;
 }

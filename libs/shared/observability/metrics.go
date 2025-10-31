@@ -1,11 +1,13 @@
 package observability
 
 import (
-	"github.com/gin-gonic/gin"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // RegisterMetricsEndpoint exposes Prometheus metrics on /metrics.
-func RegisterMetricsEndpoint(router *gin.Engine) {
-	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+func RegisterMetricsEndpoint(router chi.Router) {
+	router.Method(http.MethodGet, "/metrics", promhttp.Handler())
 }
