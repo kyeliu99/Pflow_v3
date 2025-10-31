@@ -84,6 +84,15 @@ func (g *gateway) registerRoutes(router chi.Router) {
 	router.Post("/tickets", g.proxy(http.MethodPost, func(r *http.Request) string {
 		return g.ticketBase + "/tickets"
 	}))
+	router.Post("/tickets/submissions", g.proxy(http.MethodPost, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/submissions"
+	}))
+	router.Get("/tickets/submissions/{id}", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/submissions/" + chi.URLParam(r, "id")
+	}))
+	router.Get("/tickets/queue-metrics", g.proxy(http.MethodGet, func(r *http.Request) string {
+		return g.ticketBase + "/tickets/queue-metrics"
+	}))
 	router.Get("/tickets/{id}", g.proxy(http.MethodGet, func(r *http.Request) string {
 		return g.ticketBase + "/tickets/" + chi.URLParam(r, "id")
 	}))

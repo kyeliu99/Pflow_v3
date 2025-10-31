@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/pflow-v3/gateway/internal/config"
-	"github.com/pflow-v3/gateway/internal/server"
+	"github.com/pflow/gateway/internal/config"
+	"github.com/pflow/gateway/internal/server"
 )
 
 func main() {

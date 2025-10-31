@@ -1,17 +1,21 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   AlertIcon,
   Badge,
   Box,
   Button,
-  Flex,
   FormControl,
   FormLabel,
   Heading,
   Input,
   Select,
+  SimpleGrid,
   Stack,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatHelpText,
   Table,
   Tbody,
   Td,
@@ -23,12 +27,18 @@ import {
 } from "@chakra-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  createTicket,
+  CreateTicketPayload,
+  ItemResponse,
+  getTicketQueueMetrics,
+  getTicketSubmission,
   listForms,
   listTickets,
   listUsers,
   resolveTicket,
+  submitTicket,
   Ticket,
+  TicketQueueMetrics,
+  TicketSubmission,
 } from "../lib/api";
 
 const statusLabels: Record<string, string> = {
@@ -51,6 +61,10 @@ const priorityOptions = [
   { value: "high", label: "高" },
 ];
 
+function isFinalSubmissionStatus(status?: string) {
+  return status === "completed" || status === "failed";
+}
+
 export default function TicketDashboard() {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -58,6 +72,8 @@ export default function TicketDashboard() {
   const [formId, setFormId] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [priority, setPriority] = useState("medium");
+  const [activeSubmissionId, setActiveSubmissionId] = useState<string | null>(null);
+  const [lastSubmissionStatus, setLastSubmissionStatus] = useState<string | null>(null);
 
   const { data: ticketsData, isLoading: ticketsLoading, isError } = useQuery({
     queryKey: ["tickets"],
@@ -71,24 +87,44 @@ export default function TicketDashboard() {
     queryKey: ["users"],
     queryFn: () => listUsers(),
   });
+  const { data: queueMetricsData } = useQuery({
+    queryKey: ["ticketQueueMetrics"],
+    queryFn: () => getTicketQueueMetrics(),
+    refetchInterval: 5000,
+  });
 
   const tickets = ticketsData?.data ?? [];
   const forms = formsData?.data ?? [];
   const users = usersData?.data ?? [];
+  const queueMetrics: TicketQueueMetrics | undefined = queueMetricsData;
 
-  const createMutation = useMutation({
-    mutationFn: createTicket,
-    onSuccess: () => {
-      toast({ status: "success", title: "工单已创建" });
-      queryClient.invalidateQueries({ queryKey: ["tickets"] });
-      queryClient.invalidateQueries({ queryKey: ["overview"] });
-      setTitle("");
-      setFormId("");
-      setAssigneeId("");
-      setPriority("medium");
+  const submissionQuery = useQuery<ItemResponse<TicketSubmission>, Error>({
+    queryKey: ["ticketSubmission", activeSubmissionId],
+    queryFn: () => getTicketSubmission(activeSubmissionId as string),
+    enabled: Boolean(activeSubmissionId),
+  });
+  const { refetch: refetchSubmission } = submissionQuery;
+
+  const submitMutation = useMutation({
+    mutationFn: (payload: CreateTicketPayload & { clientReference?: string }) => submitTicket(payload),
+    onSuccess: (response) => {
+      const submission = response.data;
+      setActiveSubmissionId(submission.id);
+      setLastSubmissionStatus(submission.status);
+      queryClient.invalidateQueries({ queryKey: ["ticketQueueMetrics"] });
+
+      if (submission.status === "completed") {
+        toast({ status: "success", title: "工单已创建" });
+        queryClient.invalidateQueries({ queryKey: ["tickets"] });
+        queryClient.invalidateQueries({ queryKey: ["overview"] });
+        resetForm();
+        setActiveSubmissionId(null);
+      } else {
+        toast({ status: "info", title: "工单已进入队列", description: "系统正在后台处理，请稍候。" });
+      }
     },
     onError: () => {
-      toast({ status: "error", title: "创建工单失败", description: "请稍后再试" });
+      toast({ status: "error", title: "提交工单失败", description: "请稍后再试" });
     },
   });
 
@@ -116,6 +152,45 @@ export default function TicketDashboard() {
     return map;
   }, [forms]);
 
+  useEffect(() => {
+  const submission: TicketSubmission | undefined = submissionQuery.data?.data;
+    if (!submission) {
+      return;
+    }
+
+    if (submission.status !== lastSubmissionStatus) {
+      setLastSubmissionStatus(submission.status);
+
+      if (submission.status === "completed") {
+        toast({ status: "success", title: "工单已创建" });
+        queryClient.invalidateQueries({ queryKey: ["tickets"] });
+        queryClient.invalidateQueries({ queryKey: ["overview"] });
+        queryClient.invalidateQueries({ queryKey: ["ticketQueueMetrics"] });
+        resetForm();
+        setActiveSubmissionId(null);
+      } else if (submission.status === "failed") {
+        toast({ status: "error", title: "工单创建失败", description: submission.errorMessage ?? "请稍后重试" });
+      }
+    }
+  }, [submissionQuery.data, lastSubmissionStatus, queryClient, toast]);
+
+  const submissionStatus = submissionQuery.data?.data.status ?? lastSubmissionStatus ?? undefined;
+  const submissionInFlight = Boolean(
+    activeSubmissionId && (!submissionStatus || !isFinalSubmissionStatus(submissionStatus))
+  );
+
+  useEffect(() => {
+    if (!submissionInFlight || !activeSubmissionId) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      refetchSubmission();
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }, [submissionInFlight, activeSubmissionId, refetchSubmission]);
+
   const handleCreateTicket = () => {
     if (!title.trim()) {
       toast({ status: "warning", title: "请输入工单标题" });
@@ -126,12 +201,25 @@ export default function TicketDashboard() {
       return;
     }
 
-    createMutation.mutate({
+    setActiveSubmissionId(null);
+    setLastSubmissionStatus(null);
+
+    const payload: CreateTicketPayload & { clientReference: string } = {
       title: title.trim(),
       formId,
       assigneeId: assigneeId || undefined,
       priority,
-    });
+      clientReference: crypto.randomUUID(),
+    };
+
+    submitMutation.mutate(payload);
+  };
+
+  const resetForm = () => {
+    setTitle("");
+    setFormId("");
+    setAssigneeId("");
+    setPriority("medium");
   };
 
   return (
@@ -139,6 +227,30 @@ export default function TicketDashboard() {
       <Heading size="md" mb={4}>
         工单管理
       </Heading>
+
+      <SimpleGrid columns={{ base: 1, md: 4 }} spacing={3} mb={6}>
+        <Stat>
+          <StatLabel>队列待处理</StatLabel>
+          <StatNumber>{queueMetrics?.pending ?? 0}</StatNumber>
+          <StatHelpText>等待分发</StatHelpText>
+        </Stat>
+        <Stat>
+          <StatLabel>处理中</StatLabel>
+          <StatNumber>{queueMetrics?.processing ?? 0}</StatNumber>
+          <StatHelpText>工作进度</StatHelpText>
+        </Stat>
+        <Stat>
+          <StatLabel>近期开结</StatLabel>
+          <StatNumber>{queueMetrics?.completed ?? 0}</StatNumber>
+          <StatHelpText>累计完成</StatHelpText>
+        </Stat>
+        <Stat>
+          <StatLabel>最久等待</StatLabel>
+          <StatNumber>{queueMetrics?.oldestPendingSeconds ?? 0}s</StatNumber>
+          <StatHelpText>队列最长排队</StatHelpText>
+        </Stat>
+      </SimpleGrid>
+
       <Stack spacing={4} mb={6}>
         <FormControl>
           <FormLabel>工单标题</FormLabel>
@@ -185,12 +297,17 @@ export default function TicketDashboard() {
         <Button
           colorScheme="blue"
           alignSelf="flex-start"
-          isLoading={createMutation.isPending}
+          isLoading={submitMutation.isPending || submissionInFlight}
           onClick={handleCreateTicket}
           isDisabled={forms.length === 0}
         >
           新建工单
         </Button>
+        {submissionInFlight && (
+          <Alert status="info" borderRadius="md">
+            <AlertIcon /> 工单正在队列中排队处理，请勿重复提交。
+          </Alert>
+        )}
         {forms.length === 0 && (
           <Alert status="warning" borderRadius="md">
             <AlertIcon /> 创建工单前，请先创建一个表单。

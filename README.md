@@ -36,6 +36,14 @@ services/
 - 每个 Handler 均提供 `Mount(router, basePath)` 方法，可在任意 Go 服务中按需挂载，默认路径分别为 `/forms`、`/users`、`/tickets` 与 `/workflows`。
 - 若需要自定义存储，可实现对应的 `Repository` 接口并传入 `NewHandler`，领域层无需修改。
 
+针对高并发场景，`components/ticket` 还额外提供：
+
+- `TicketSubmission` 模型与 `SubmissionRepository`：持久化异步请求、统计队列指标。
+- `QueueCoordinator`：负责写入数据库、发布 Kafka 消息，并通过 `SubmissionCoordinator` 接口对外暴露。
+- `QueueWorker`：消费 Kafka 消息、调用仓储落地工单，可通过 `mq.NewConsumer` 快速接入任意服务。
+
+消息队列的底层封装在 `libs/shared/mq` 中，基于 `github.com/segmentio/kafka-go` 提供 `NewProducer`、`NewConsumer` 等主流 API，避免重复配置 Dialer、重试与客户端标识。任何服务只需在配置中提供 `*_KAFKA_BROKERS`、`*_QUEUE_TOPIC` 与 `*_QUEUE_GROUP` 即可复用同一套组件。
+
 示例（在自定义服务中复用工单组件）：
 
 ```go
@@ -66,7 +74,16 @@ Gateway 及各领域微服务即是通过上述组件拼装而成，这意味着
 
 ### 2. 初始化数据库（无需 Docker）
 
-在已有 PostgreSQL 实例的前提下，可直接执行仓库自带的引导脚本创建默认账号与数据库：
+首次在本地调试且尚未安装 PostgreSQL 时，可以借助仓库提供的 helper 脚本快速拉起官方容器：
+
+```bash
+# 需要本机已安装 Docker，数据目录默认写入仓库根目录的 .data/postgres
+./scripts/postgres/run-local.sh
+```
+
+脚本会自动复用已有容器或创建新的 `postgres:16` 实例，并将 5432 端口映射到宿主机，适合作为开发环境的最小依赖。
+
+若已经具备 PostgreSQL 实例，可直接执行仓库自带的引导脚本创建默认账号与数据库：
 
 ```bash
 # 以本地 PostgreSQL 默认超级用户为例，提前导出密码（或使用 .pgpass 文件）
@@ -137,9 +154,10 @@ cp .env.example .env
 | Form Service | `services/form` | 8081 | `go run ./cmd/main.go` |
 | Identity Service | `services/identity` | 8082 | `go run ./cmd/main.go` |
 | Ticket Service | `services/ticket` | 8083 | `go run ./cmd/main.go` |
+| Ticket Worker（队列消费者） | `services/ticket` | - | `go run ./cmd/worker/main.go` |
 | Workflow Service | `services/workflow` | 8084 | `go run ./cmd/main.go` |
 
-> 服务在启动时会调用 `cfg.DatabaseDSN(<service>)` 与 `cfg.ResolveServiceHTTPPort(<service>, <fallback>)`：只需在 `.env` 或运行命令前设置 `FORM_DATABASE_DSN`、`TICKET_HTTP_PORT` 等变量即可让组件无缝连接不同的数据库实例或监听端口。`libs/shared/database.ConnectWithDSN` 会缓存命名连接，便于在同一进程中复用多个数据源。
+> 服务在启动时会调用 `cfg.DatabaseDSN(<service>)` 与 `cfg.ResolveServiceHTTPPort(<service>, <fallback>)`：只需在 `.env` 或运行命令前设置 `FORM_DATABASE_DSN`、`TICKET_HTTP_PORT` 等变量即可让组件无缝连接不同的数据库实例或监听端口。`libs/shared/database.ConnectWithDSN` 会缓存命名连接，便于在同一进程中复用多个数据源。队列消费者同时读取 `TICKET_QUEUE_TOPIC`、`TICKET_QUEUE_GROUP` 等变量，并通过 `libs/shared/mq` 连接 Kafka。
 
 启动顺序建议为：先运行依赖基础设施与 API Gateway，再依次启动领域服务。可借助 `air`、`fresh` 等热加载工具提升开发效率。
 
@@ -151,18 +169,12 @@ cd apps/frontend
 npm run build
 
 技术选型评估
-采用「Go 网关 + Django 业务服务」混合方案，核心考量：
-Go Gateway 优势：
-单二进制部署，适合横向扩展
-goroutine 并发模型，高并发处理优于 Python
-依赖精简（chi + 标准库），维护成本低
-Django 领域服务优势：
-数据密集型业务效率高：ORM、序列化、权限开箱即用
-生态成熟：Celery 异步、Django Admin 调试便捷
-团队适配：降低前端 / 运营学习成本
-整体平衡：
-Go 负责「流量入口」高并发，Django 负责「业务核心」快速建模
-依赖均为官方 / 主流开源项目，无个人仓库风险
+
+- **单语言栈**：所有后端微服务均以 Go 实现，依赖 `chi`、`gorm` 等主流社区项目，降低跨语言维护成本。
+- **组件化复用**：核心领域逻辑沉淀在 `libs/components`，通过 Handler + Repository 组合实现“即插即用”，适合拆装成 BFF、RPC 或后台任务。
+- **可靠的消息队列**：基于 `github.com/segmentio/kafka-go` 的 `libs/shared/mq` 统一封装生产者 / 消费者，结合 `TicketSubmission` 模型实现可重放的异步工单管道。
+- **前端防呆体验**：React 控制台利用队列指标与提交状态轮询，防止重复点击并即时反馈后台进度。
+- **无个人依赖**：所有三方库均来自活跃的官方 / 社区组织，便于企业内网镜像与安全评估。
 API 约定
 所有接口通过 Gateway 统一访问（前缀 /api），核心接口：
 服务

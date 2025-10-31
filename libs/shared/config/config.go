@@ -25,8 +25,11 @@ type AppConfig struct {
 	TicketServiceURL   string
 	WorkflowServiceURL string
 
-	ServiceDatabaseDSN map[string]string
-	ServiceHTTPPorts   map[string]string
+	ServiceDatabaseDSN  map[string]string
+	ServiceHTTPPorts    map[string]string
+	ServiceKafkaBrokers map[string]string
+	ServiceQueueTopics  map[string]string
+	ServiceQueueGroups  map[string]string
 }
 
 var (
@@ -54,6 +57,9 @@ func Load() *AppConfig {
 
 		cfg.ServiceDatabaseDSN = collectServiceValues("DATABASE_DSN")
 		cfg.ServiceHTTPPorts = collectServiceValues("HTTP_PORT")
+		cfg.ServiceKafkaBrokers = collectServiceValues("KAFKA_BROKERS")
+		cfg.ServiceQueueTopics = collectServiceValues("QUEUE_TOPIC")
+		cfg.ServiceQueueGroups = collectServiceValues("QUEUE_GROUP")
 	})
 
 	return cfg
@@ -209,6 +215,69 @@ func (cfg *AppConfig) ResolveServiceHTTPPort(service, fallback string) string {
 	}
 
 	return cfg.ResolveHTTPPort(fallback)
+}
+
+// KafkaBrokerList resolves a service-specific Kafka broker list, falling back to the shared setting.
+func (cfg *AppConfig) KafkaBrokerList(service string) []string {
+	var raw string
+	if cfg != nil {
+		raw = cfg.KafkaBrokers
+		serviceKey := normalizeServiceKey(service)
+		if brokers, ok := cfg.ServiceKafkaBrokers[serviceKey]; ok {
+			brokers = strings.TrimSpace(brokers)
+			if brokers != "" {
+				raw = brokers
+			}
+		}
+	}
+
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// ResolveServiceQueueTopic returns the topic name for the service-specific queue.
+func (cfg *AppConfig) ResolveServiceQueueTopic(service, fallback string) string {
+	if cfg == nil {
+		return strings.TrimSpace(fallback)
+	}
+
+	serviceKey := normalizeServiceKey(service)
+	if topic, ok := cfg.ServiceQueueTopics[serviceKey]; ok {
+		topic = strings.TrimSpace(topic)
+		if topic != "" {
+			return topic
+		}
+	}
+
+	topic := strings.TrimSpace(fallback)
+	if topic != "" {
+		return topic
+	}
+	return strings.TrimSpace(cfg.KafkaTopic)
+}
+
+// ResolveServiceQueueGroup returns the consumer group for the service queue.
+func (cfg *AppConfig) ResolveServiceQueueGroup(service, fallback string) string {
+	if cfg == nil {
+		return strings.TrimSpace(fallback)
+	}
+
+	serviceKey := normalizeServiceKey(service)
+	if group, ok := cfg.ServiceQueueGroups[serviceKey]; ok {
+		group = strings.TrimSpace(group)
+		if group != "" {
+			return group
+		}
+	}
+
+	return strings.TrimSpace(fallback)
 }
 
 // DatabaseDSN resolves the database DSN for a service, defaulting to PostgresDSN.

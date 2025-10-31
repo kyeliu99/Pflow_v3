@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE_URL = import.meta.env.VITE_GATEWAY_URL ?? "http://localhost:8000/api/";
+const API_BASE_URL = import.meta.env.VITE_GATEWAY_URL ?? "http://localhost:8080/api";
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -40,6 +40,25 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;
+}
+
+export interface TicketSubmission {
+  id: string;
+  clientReference: string;
+  status: string;
+  ticketId?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface TicketQueueMetrics {
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  oldestPendingSeconds: number;
 }
 
 export interface WorkflowDefinition {
@@ -115,6 +134,21 @@ export async function listTickets(params?: { status?: string; assigneeId?: strin
 export async function createTicket(payload: CreateTicketPayload) {
   const { data } = await apiClient.post<ItemResponse<Ticket>>("/tickets", payload);
   return data;
+}
+
+export async function submitTicket(payload: CreateTicketPayload & { clientReference?: string }) {
+  const { data } = await apiClient.post<ItemResponse<TicketSubmission>>("/tickets/submissions", payload);
+  return data;
+}
+
+export async function getTicketSubmission(id: string) {
+  const { data } = await apiClient.get<ItemResponse<TicketSubmission>>(`/tickets/submissions/${id}`);
+  return data;
+}
+
+export async function getTicketQueueMetrics() {
+  const { data } = await apiClient.get<{ data: TicketQueueMetrics }>("/tickets/queue-metrics");
+  return data.data;
 }
 
 export async function resolveTicket(id: string) {

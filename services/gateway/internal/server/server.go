@@ -10,8 +10,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/pflow-v3/gateway/internal/config"
-	"github.com/pflow-v3/gateway/internal/proxy"
+	"github.com/pflow/gateway/internal/config"
+	"github.com/pflow/gateway/internal/proxy"
 )
 
 // New constructs the HTTP server wiring for the gateway.
