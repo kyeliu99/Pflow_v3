@@ -1,249 +1,233 @@
-# PFlow v3
+PFlow v3
+** 
+ 
+ 
+ 
+PFlow v3 是面向流程编排与工单协同的端到端解决方案，采用 Django 5 微服务 + React 18 前端 + Go API Gateway 架构，支持服务独立部署扩展，通过网关聚合能力，前端统一接入 BFF 接口。
+目录
+架构概览
+本地环境准备
+数据库初始化
+环境变量配置
+依赖安装
+服务启动
+测试验证
+技术选型评估
+API 约定
+后续规划
+贡献指南
+许可证
+架构概览
+目录结构
+PFlow-v3/
+├── apps/
+│   └── frontend/          # React + Vite 管理控制台（可视化操作）
+├── services/
+│   ├── gateway/           # Go API Gateway（chi 框架，聚合4个领域服务）
+│   ├── form/              # 表单建模服务（管理表单结构/字段）
+│   ├── identity/          # 身份服务（用户/角色权限）
+│   ├── ticket/            # 工单服务（工单生命周期管理）
+│   └── workflow/          # 流程定义服务（流程模板/步骤）
+├── scripts/
+│   └── postgres/init.sql  # 数据库初始化脚本（创建库/角色）
+├── .env.example           # 环境变量示例
+└── README.md              # 项目文档（本文档）
 
-PFlow v3 提供了一个面向流程编排与工单协同的端到端解决方案。本仓库以 **Django 5 微服务 + React 18 前端控制台** 的方式实现，每个领域服务都可以独立部署与扩展，API Gateway 负责聚合对外能力，前端通过统一的 BFF 接口访问后端能力。
+核心技术栈
+模块
+技术选型
+核心作用
+API Gateway
+Go 1.21、chi v5、net/http
+接口聚合、反向代理、高并发
+领域服务
+Django 5、DRF、Celery 5
+业务逻辑、异步任务
+数据存储
+PostgreSQL 16（服务独立库）
+结构化数据持久化
+消息队列
+Redis 7 + Celery Worker
+工单峰值流量处理
+前端
+React 18、Vite、Chakra UI、TanStack Query
+可视化控制台
+依赖管理
+pip、npm、go mod
+多语言依赖管理
 
-## 架构概览
+本地环境准备
+需提前安装以下依赖（不维护 Docker Compose，容器化可自行编排）：
+Go 1.21+（Gateway 运行）
+Python 3.12+（Django 服务）
+Node.js 18+ + npm（前端依赖）
+PostgreSQL 16（建议企业自建 / 包管理器安装）
+Redis 7+（开启持久化，用于 Celery）
+可选工具：direnv/dotenv（环境变量）、pgcli（PostgreSQL 客户端）
+数据库初始化
+每个服务需独立数据库与角色，通过脚本一键创建（幂等执行）：
+（可选）编辑脚本调整密码 / 库名：
+vim scripts/postgres/init.sql
 
-```
-apps/
-  frontend/          # React + Vite 管理控制台
-services/
-  gateway/           # Django API Gateway，聚合四个领域服务
-  form/              # 表单建模服务，管理表单及字段
-  identity/          # 身份服务，维护协作者账户与角色
-  ticket/            # 工单服务，负责工单生命周期
-  workflow/          # 流程定义服务，维护流程及步骤
-```
+执行脚本（需启动 PostgreSQL，替换 postgres 为管理员账户）：
+psql -U postgres -h 127.0.0.1 -f scripts/postgres/init.sql
 
-技术栈全部基于官方与主流开源生态：
-
-- 后端：Django 5 · Django REST Framework · Celery 5 · django-cors-headers · requests
-- 数据库：PostgreSQL 16（每个服务拥有独立库）
-- 消息队列：Redis 7 + Celery Worker（处理工单提交峰值）
-- 前端：React 18 · Vite · Chakra UI · TanStack Query · Axios
-
-## 本地环境准备
-
-1. Python 3.12+
-2. Node.js 18+ 与 npm
-3. PostgreSQL 16（建议通过包管理器或企业自建数据库，而非 Docker Compose）
-4. Redis 7+（Celery 队列使用，确保开启持久化或连接高可用实例）
-5. 可选：Kafka、Camunda 等后续拓展依赖
-
-> 本仓库不再维护 Docker Compose 方案，如需要容器化可在后续阶段自行编排。
-
-## 数据库初始化
-
-为每个服务创建独立的数据库与角色（可按需调整端口/密码）：
-
-```sql
-CREATE ROLE pflow_gateway LOGIN PASSWORD 'pflow_gateway';
-CREATE ROLE pflow_form LOGIN PASSWORD 'pflow_form';
-CREATE ROLE pflow_identity LOGIN PASSWORD 'pflow_identity';
-CREATE ROLE pflow_ticket LOGIN PASSWORD 'pflow_ticket';
-CREATE ROLE pflow_workflow LOGIN PASSWORD 'pflow_workflow';
-
-CREATE DATABASE pflow_gateway OWNER pflow_gateway;
-CREATE DATABASE pflow_form OWNER pflow_form;
-CREATE DATABASE pflow_identity OWNER pflow_identity;
-CREATE DATABASE pflow_ticket OWNER pflow_ticket;
-CREATE DATABASE pflow_workflow OWNER pflow_workflow;
-```
-
-<<<<<<< HEAD
-也可以通过 `psql`/`pgcli` 或企业内部数据库平台完成建库操作。
-=======
-- 首次启动 PostgreSQL 会自动执行 `scripts/postgres/init.sql`，确保创建 `pflow` 数据库与登录角色。
-- 如果此前已经启动过旧版本的容器导致卷内缺少该角色，可执行 `docker compose down -v postgres` 清理卷后再启动，或手动进入容器执行 `psql -U postgres -c "CREATE ROLE pflow LOGIN PASSWORD 'pflow';"` 与 `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE pflow TO pflow;"`。
-
-- PostgreSQL 暴露在 `5432`
-- Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
-- Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
-- 如果某个容器启动失败，可通过 `docker compose logs <service>` 查看原因
->>>>>>> main
-
-## 环境变量
-
-复制根目录的示例配置后按需修改（例如数据库密码、端口）：
-
-```bash
+脚本作用：
+创建 4 个数据库：pflow_form、pflow_identity、pflow_ticket、pflow_workflow
+为每个库创建同名角色（如 pflow_form 角色拥有对应库权限）
+环境变量配置
+复制示例配置文件：
 cp .env.example .env
-```
 
-`.env` 中的变量仅作为参考，实际运行时可以在 shell 中 `export` 或使用 `direnv`/`dotenv` 管理。各服务的 Django 配置会优先读取以下变量：
+关键变量说明（未设置则用默认值）：
+服务
+核心变量（示例值）
+Go Gateway
+GATEWAY_PORT=8000、FORM_SERVICE_URL=http://localhost:8001
+Form 服务
+FORM_DATABASE_URL=postgresql://pflow_form:pflow_form@localhost:5432/pflow_form
+Identity 服务
+IDENTITY_DATABASE_URL=postgresql://pflow_identity:pflow_identity@localhost:5432/pflow_identity
+Ticket 服务
+TICKET_BROKER_URL=redis://localhost:6379/0、TICKET_QUEUE_NAME=ticket_submissions
+Workflow 服务
+WORKFLOW_DATABASE_URL=postgresql://pflow_workflow:pflow_workflow@localhost:5432/pflow_workflow
+前端
+VITE_GATEWAY_URL=http://localhost:8000/api/
 
-| 服务 | 关键变量 |
-| --- | --- |
-| Gateway | `GATEWAY_DATABASE_URL`、`FORM_SERVICE_URL`、`IDENTITY_SERVICE_URL`、`TICKET_SERVICE_URL`、`WORKFLOW_SERVICE_URL` |
-| Form | `FORM_DATABASE_URL`、`DJANGO_ALLOWED_HOSTS`、`DJANGO_SECRET_KEY` |
-| Identity | `IDENTITY_DATABASE_URL` |
-| Ticket | `TICKET_DATABASE_URL`、`TICKET_BROKER_URL`、`TICKET_RESULT_BACKEND`、`TICKET_QUEUE_NAME` |
-| Workflow | `WORKFLOW_DATABASE_URL` |
-| Frontend | `VITE_GATEWAY_URL` |
+依赖安装
+1. Go Gateway 依赖
+cd services/gateway
+go mod tidy  # 自动安装 chi 等依赖
 
-未显式设置时会回退到 `.env.example` 中的默认值（本地运行 localhost + 800x 端口）。
-
-## 安装依赖
-
-建议为每个服务创建独立虚拟环境。以下命令以 `venv` 为例：
-
-```bash
-# Form service
-direnv allow .  # 如使用 direnv，可在每个服务目录配置 .envrc
+2. Django 领域服务依赖（4 个服务操作相同）
+以 Form 服务为例，其他服务（identity/ticket/workflow）重复此步骤：
+# 进入服务目录
+cd services/form
+# 创建并激活虚拟环境
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows：.venv\Scripts\activate
+# 安装依赖
 pip install --upgrade pip
 pip install -r requirements.txt
-```
 
-对 `services/identity`、`services/ticket`、`services/workflow`、`services/gateway` 重复上述步骤。前端在 `apps/frontend` 中执行 `npm install`。
+3. 前端依赖
+cd apps/frontend
+npm install  # 安装 React、Vite 等依赖
 
-## 运行数据库迁移
-
-每个服务都包含手工维护的初始迁移，首次启动前执行：
-
-```bash
-cd services/form
-source .venv/bin/activate
-python manage.py migrate
-
-cd ../identity
-source .venv/bin/activate
-python manage.py migrate
-
-cd ../ticket
-source .venv/bin/activate
-python manage.py migrate
-
-cd ../workflow
-source .venv/bin/activate
-python manage.py migrate
-
-cd ../gateway
-source .venv/bin/activate
-python manage.py migrate
-```
-
-## 启动 Redis 与 Celery Worker
-
-工单服务的高并发写入通过 Celery + Redis 队列处理，请确保 Redis 已运行：
-
-```bash
-# 以 macOS 为例
-brew install redis
+服务启动
+建议打开多个终端，按以下顺序启动（Gateway 依赖其他服务地址）：
+1. 启动 Redis（先启动，用于 Celery 队列）
+# macOS（brew）
 brew services start redis
-
-# 或使用 Linux 原生包管理器
+# Linux（systemd）
 sudo systemctl start redis
-```
+# 验证：返回 PONG 即正常
+redis-cli ping
 
-随后在 `services/ticket` 目录启动 Celery worker：
-
-```bash
+2. 启动 Celery Worker（Ticket 服务目录）
 cd services/ticket
 source .venv/bin/activate
+# 监听工单队列，输出 info 级日志
 celery -A ticket_service worker --loglevel=info
-```
 
-Celery 会监听 `TICKET_QUEUE_NAME` 队列（默认 `ticket_submissions`），并自动处理通过 API 提交的工单创建任务。
-
-## 启动服务
-
-为方便调试，推荐在多个终端窗口中分别启动服务：
-
-```bash
-# API Gateway
-cd services/gateway
-source .venv/bin/activate
-export GATEWAY_DATABASE_URL=postgresql://pflow_gateway:pflow_gateway@localhost:5432/pflow_gateway
-export FORM_SERVICE_URL=http://localhost:8001
-export IDENTITY_SERVICE_URL=http://localhost:8002
-export TICKET_SERVICE_URL=http://localhost:8003
-export WORKFLOW_SERVICE_URL=http://localhost:8004
-python manage.py runserver 0.0.0.0:8000
-
-# Form service
+⚠️ 保持终端运行，关闭则无法处理工单任务
+3. 启动 Django 领域服务
+Form 服务（端口 8001）
 cd services/form
 source .venv/bin/activate
 export FORM_DATABASE_URL=postgresql://pflow_form:pflow_form@localhost:5432/pflow_form
 python manage.py runserver 0.0.0.0:8001
 
-# Identity service
+Identity 服务（端口 8002）
 cd services/identity
 source .venv/bin/activate
 export IDENTITY_DATABASE_URL=postgresql://pflow_identity:pflow_identity@localhost:5432/pflow_identity
 python manage.py runserver 0.0.0.0:8002
 
-# Ticket service
+Ticket 服务（端口 8003）
 cd services/ticket
 source .venv/bin/activate
 export TICKET_DATABASE_URL=postgresql://pflow_ticket:pflow_ticket@localhost:5432/pflow_ticket
 export TICKET_BROKER_URL=redis://localhost:6379/0
-export TICKET_RESULT_BACKEND=redis://localhost:6379/0
 python manage.py runserver 0.0.0.0:8003
 
-# Workflow service
+Workflow 服务（端口 8004）
 cd services/workflow
 source .venv/bin/activate
 export WORKFLOW_DATABASE_URL=postgresql://pflow_workflow:pflow_workflow@localhost:5432/pflow_workflow
 python manage.py runserver 0.0.0.0:8004
-```
 
-> 提示：工单队列需要独立的 Celery worker（见上文），请在另一个终端保持 `celery -A ticket_service worker` 运行，以避免高并发场景下的请求丢失。
+4. 启动 Go API Gateway（端口 8000）
+cd services/gateway
+# 导出环境变量（或通过 .env 加载）
+export GATEWAY_PORT=8000
+export FORM_SERVICE_URL=http://localhost:8001
+export IDENTITY_SERVICE_URL=http://localhost:8002
+export TICKET_SERVICE_URL=http://localhost:8003
+export WORKFLOW_SERVICE_URL=http://localhost:8004
+# 启动网关
+go run ./cmd/gateway
+# 验证：访问 http://localhost:8000/healthz，返回 OK 即正常
 
-所有服务启动后，API 网关会在 `/api` 下转发 CRUD 接口，同时提供 `/api/overview/` 聚合指标与 `/api/healthz/` 健康探针。
-
-## 前端控制台
-
-```bash
+5. 启动前端控制台（端口 5173）
 cd apps/frontend
-npm install
+# 可选：修改网关地址
+# export VITE_GATEWAY_URL=http://your-gateway-url/api/
 npm run dev
-```
+# 访问 http://localhost:5173 进入控制台
 
-默认情况下前端通过 `VITE_GATEWAY_URL` 指向 `http://localhost:8000/api/`，可在 `.env` 或命令行中修改。运行后在 `http://localhost:5173` 访问控制台，可体验表单库、工单面板、流程设计器与系统概览模块。
-
-> 控制台在提交工单时会自动生成客户端请求 ID，并在队列处理完成后自动刷新列表，避免网络抖动导致的重复提交。
-
-## 测试
-
-各 Django 服务均内置基础的 API 测试，可在对应目录运行：
-
-```bash
+测试验证
+1. Django 服务接口测试
+# 进入目标服务目录（如 form）
+cd services/form
+source .venv/bin/activate
+# 执行单元测试（验证接口/模型逻辑）
 python manage.py test
-```
 
-前端可执行：
-
-```bash
+2. 前端构建验证
+cd apps/frontend
+# 验证代码可正常打包（无语法错误）
 npm run build
-```
 
-## 技术选型评估：Django vs Go
+技术选型评估
+采用「Go 网关 + Django 业务服务」混合方案，核心考量：
+Go Gateway 优势：
+单二进制部署，适合横向扩展
+goroutine 并发模型，高并发处理优于 Python
+依赖精简（chi + 标准库），维护成本低
+Django 领域服务优势：
+数据密集型业务效率高：ORM、序列化、权限开箱即用
+生态成熟：Celery 异步、Django Admin 调试便捷
+团队适配：降低前端 / 运营学习成本
+整体平衡：
+Go 负责「流量入口」高并发，Django 负责「业务核心」快速建模
+依赖均为官方 / 主流开源项目，无个人仓库风险
+API 约定
+所有接口通过 Gateway 统一访问（前缀 /api），核心接口：
+服务
+接口路径与功能
+表单服务
+GET/POST/PUT/DELETE /api/forms/（表单 CRUD）
+身份服务
+GET/POST /api/users/（用户管理）、GET /api/roles/（角色查询）
+工单服务
+POST /api/tickets/submissions/（异步创建工单）GET /api/tickets/submissions/{id}/（查询状态）POST /api/tickets/{id}/resolve/（完成工单）
+流程服务
+GET/POST /api/workflows/（流程 CRUD）POST /api/workflows/{id}/publish/（激活流程）
+网关聚合
+GET /api/overview/（服务数据聚合）GET /api/tickets/queue-metrics/（队列监控）GET /api/healthz（健康检查）
 
-根据当前需求，微服务需要快速迭代、具备成熟的 ORM/序列化能力，并能够与 Celery 等异步组件无缝集成：
-
-- **快速建模能力**：Django + Django REST Framework 提供开箱即用的模型迁移、序列化与验证体系，适合频繁调整业务字段的场景；Go 则需要手动组合 Gin/Fiber + GORM/SQLC 等组件，开发效率略低。
-- **官方生态与长期维护**：本方案完全依赖官方维护或基金会托管的库（Django、DRF、Celery、Redis 驱动等），避免引入个人仓库依赖；Go 虽性能优异，但在表单/流程这类数据密集场景并无决定性优势。
-- **异步与水平扩展**：Celery 与 Redis 深度集成，提供任务重试、监控等能力，满足工单高并发创建需求；若后续需要进一步扩容，可通过增加 worker 实例扩展吞吐。
-- **多语言协同**：前端和运营团队更熟悉 Django 模型定义与 Admin 后台，可降低学习成本；若需要引入高性能计算模块，可在后续以 gRPC/HTTP 方式接入 Go 服务。
-
-综合评估后，继续采用 Django 生态能够在交付周期、团队技能与稳定性之间取得最佳平衡，同时保留未来按需引入 Go 微服务的空间。
-
-## API 约定
-
-- 表单服务：`/api/forms/` 提供 CRUD，Schema 与字段以 JSON 表达。
-- 身份服务：`/api/users/` 维护协作者列表。
-- 工单服务：`POST /api/tickets/submissions/` 通过队列异步创建工单、`GET /api/tickets/submissions/{id}/` 查询排队结果、`POST /api/tickets/{id}/resolve/` 快捷完成工单。
-- 流程服务：`/api/workflows/` 管理流程与步骤，`POST /api/workflows/{id}/publish/` 激活流程。
-- 网关：统一转发上述接口，`GET /api/overview/` 聚合各服务的数据量与状态分布，并提供 `GET /api/tickets/queue-metrics/` 反馈队列运行状况。
-
-如需对接其他系统，可直接消费各服务 API，或在 Gateway 中新增聚合路由。
-
-## 后续规划
-
-1. 集成认证与多租户能力（JWT/OIDC）。
-2. 扩展流程服务与 Camunda/Zeebe 的互操作。
-3. 在前端引入可视化拖拽编排（如 React Flow）。
-
-欢迎在此基础上继续扩展业务能力，或根据企业需求自定义部署拓扑。
+后续规划
+认证增强：集成 JWT/OIDC 实现单点登录、多租户隔离
+流程扩展：对接 Camunda/Zeebe 支持复杂流程（并行网关、定时任务）
+前端优化：引入 React Flow 实现可视化流程拖拽
+监控补充：增加 Prometheus + Grafana 监控（网关 / 队列 / 数据库）
+贡献指南
+Fork 本仓库到个人账号
+创建特性分支：git checkout -b feature/your-feature
+提交代码：git commit -m "add: 新增XX功能"
+推送分支：git push origin feature/your-feature
+提交 Pull Request 到主仓库
+许可证
+本项目基于 MIT License 开源，可自由使用、修改和分发。
