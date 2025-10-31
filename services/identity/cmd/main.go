@@ -5,47 +5,33 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
+	identitycmp "github.com/pflow/components/identity"
+
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
 	"github.com/pflow/shared/httpx"
 )
 
-type user struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
-}
-
 func main() {
 	cfg := config.Load()
-	database.Connect()
+	dsn := cfg.DatabaseDSN("identity")
+	db := database.ConnectWithDSN("identity", dsn)
+
+	if err := db.AutoMigrate(&identitycmp.User{}); err != nil {
+		log.Fatalf("identity service: failed to run migrations: %v", err)
+	}
+
+	repository := identitycmp.NewGormRepository(db)
+	handler := identitycmp.NewHandler(repository)
 
 	server := httpx.New()
+	handler.Mount(server.Router, "")
 
-	api := server.Engine.Group("/identity")
-	{
-		api.GET("/users", listUsers)
-		api.POST("/users", createUser)
-	}
-
-	addr := fmt.Sprintf(":%s", cfg.HTTPPort)
+	port := cfg.ResolveServiceHTTPPort("identity", "8082")
+	addr := fmt.Sprintf(":%s", port)
 	log.Printf("identity service listening on %s", addr)
-	if err := server.Start(addr); err != nil {
+
+	if err := server.Start(addr); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("identity service stopped: %v", err)
 	}
-}
-
-func listUsers(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"data": []user{}})
-}
-
-func createUser(c *gin.Context) {
-	var payload user
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": payload})
 }
