@@ -50,7 +50,17 @@ CREATE DATABASE pflow_ticket OWNER pflow_ticket;
 CREATE DATABASE pflow_workflow OWNER pflow_workflow;
 ```
 
+<<<<<<< HEAD
 也可以通过 `psql`/`pgcli` 或企业内部数据库平台完成建库操作。
+=======
+- 首次启动 PostgreSQL 会自动执行 `scripts/postgres/init.sql`，确保创建 `pflow` 数据库与登录角色。
+- 如果此前已经启动过旧版本的容器导致卷内缺少该角色，可执行 `docker compose down -v postgres` 清理卷后再启动，或手动进入容器执行 `psql -U postgres -c "CREATE ROLE pflow LOGIN PASSWORD 'pflow';"` 与 `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE pflow TO pflow;"`。
+
+- PostgreSQL 暴露在 `5432`
+- Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
+- Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
+- 如果某个容器启动失败，可通过 `docker compose logs <service>` 查看原因
+>>>>>>> main
 
 ## 环境变量
 
