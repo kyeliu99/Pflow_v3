@@ -68,70 +68,87 @@ Gateway 及各领域微服务即是通过上述组件拼装而成，这意味着
 
 - Go 1.21+
 - Node.js 18+
-- PostgreSQL 15+（可部署在本地或远程服务器）
-- `psql` 命令行工具（随 PostgreSQL 一并安装）
-- （可选）Docker & Docker Compose —— 仅当你希望容器化依赖服务时使用
+- PostgreSQL 15+（或以上版本）
+- `psql`、`initdb`、`pg_ctl` 等 PostgreSQL 命令行工具
+- OpenJDK 17+（用于运行 Kafka 与 Camunda Zeebe）
+- `curl`、`tar`、`uuidgen`（用于下载与解压官方发行版）
 
-### 2. 初始化数据库（无需 Docker）
+### 2. 初始化 PostgreSQL（本地进程）
 
-首次在本地调试且尚未安装 PostgreSQL 时，可以借助仓库提供的 helper 脚本快速拉起官方容器：
+`scripts/postgres/run-local.sh` 基于官方工具链创建并管理独立的数据目录，无需 Docker：
 
 ```bash
-# 需要本机已安装 Docker，数据目录默认写入仓库根目录的 .data/postgres
-./scripts/postgres/run-local.sh
+# 第一次启动会在 .data/postgres 下初始化数据，并监听 127.0.0.1:5432
+./scripts/postgres/run-local.sh start
+
+# 查看运行状态
+./scripts/postgres/run-local.sh status
+
+# 结束进程（例如切换分支或释放端口时）
+./scripts/postgres/run-local.sh stop
 ```
 
-脚本会自动复用已有容器或创建新的 `postgres:16` 实例，并将 5432 端口映射到宿主机，适合作为开发环境的最小依赖。若 5432 已被其他 PostgreSQL 占用且未显式设置 `POSTGRES_PORT`，脚本会自动在后续端口（默认尝试 10 个，例如 5433、5434……）中选择空闲端口，并在完成时提示最终绑定的端口。
+脚本会自动向 `postgresql.conf` 写入监听地址、端口与连接数量，同时在 `pg_hba.conf` 中启用本地密码登录。若系统尚未安装 PostgreSQL，可通过以下方式获取官方发行版：
 
-- 如需固定端口，可在执行前导出 `POSTGRES_PORT=<目标端口>`；若该端口被占用，脚本会直接报错提示你释放端口或改用其他值。
-- 若希望扩大自动搜索范围，可设置 `PFLOW_POSTGRES_PORT_SEARCH_RANGE=<尝试次数>`（默认 10，对应最多尝试 11 个端口）。
+- macOS（Homebrew）：`brew install postgresql@16`
+- Debian/Ubuntu：`sudo apt install postgresql postgresql-contrib`
+- Windows：下载 [postgresql.org](https://www.postgresql.org/download/) 提供的安装包，并在 Git Bash / WSL 中执行脚本。
 
-若已经具备 PostgreSQL 实例，可直接执行仓库自带的引导脚本创建默认账号与数据库：
+常用覆盖项：
+
+- `POSTGRES_PORT`：监听端口（默认 5432）
+- `POSTGRES_SUPERUSER` / `POSTGRES_PASSWORD`：初始化的超级用户（默认 postgres/postgres）
+- `PFLOW_POSTGRES_DATA_DIR`：数据目录（默认 `.data/postgres`）
+- `PFLOW_POSTGRES_SKIP_BOOTSTRAP=1`：跳过自动执行 `scripts/postgres/bootstrap.sh`
+
+若已有 PostgreSQL 实例，只需执行 bootstrap 脚本即可幂等创建 `pflow` 角色与数据库：
 
 ```bash
-# 以本地 PostgreSQL 默认超级用户为例，提前导出密码（或使用 .pgpass 文件）
 export PGPASSWORD=<postgres 密码>
-
-# 可通过以下环境变量覆盖连接信息：
-#   POSTGRES_HOST / POSTGRES_PORT          —— PostgreSQL 地址（默认 localhost:5432）
-#   POSTGRES_SUPERUSER                    —— 具有创建数据库权限的账号（默认 postgres）
-#   POSTGRES_DB                           —— 连接时使用的数据库（默认 postgres）
-./scripts/postgres/bootstrap.sh
+POSTGRES_HOST=<你的地址> POSTGRES_PORT=<端口> ./scripts/postgres/bootstrap.sh
 ```
 
-`bootstrap.sh` 会重复执行 `scripts/postgres/init.sql` 并确保幂等：
-
-- 若不存在 `pflow` 角色则自动创建并设置口令 `pflow`
-- 若不存在 `pflow` 数据库则创建并将所有权授予 `pflow`
-
-如无法使用脚本，也可以手动执行以下 SQL：
+脚本内部复用 `scripts/postgres/init.sql`，也可手动执行以下 SQL：
 
 ```sql
 CREATE ROLE pflow LOGIN PASSWORD 'pflow';
 CREATE DATABASE pflow OWNER pflow;
 ```
 
-完成后，微服务即可使用 `.env` 中的默认 `POSTGRES_DSN=postgres://pflow:pflow@localhost:5432/pflow?sslmode=disable` 进行连接。
+### 3. 启动 Kafka（KRaft 单节点）
 
-### 3. （可选）使用 Docker Compose 启动依赖
-
-若希望在本地快速拉起一套隔离的依赖服务，可继续使用项目根目录的 `docker-compose.yml`（示例见后文）。
-
-- 默认 compose 会一次性拉起 PostgreSQL、Zookeeper、Kafka 与 Camunda：
+`scripts/kafka/run-local.sh` 会下载 Apache Kafka 官方二进制并以 KRaft 模式启动单节点集群：
 
 ```bash
-docker compose up -d postgres zookeeper kafka camunda
+# 首次执行会在 .data/kafka 下完成下载与初始化
+./scripts/kafka/run-local.sh start
+
+# 确认服务是否就绪
+./scripts/kafka/run-local.sh status
+
+# 停止本地 Kafka
+./scripts/kafka/run-local.sh stop
 ```
 
-- PostgreSQL 容器启动时同样会自动运行 `scripts/postgres/init.sql`，确保创建 `pflow` 数据库与登录角色。
-- 如果此前已经启动过旧版本的容器导致卷内缺少该角色，可执行 `docker compose down -v postgres` 清理卷后再启动，或手动进入容器执行  `psql -U postgres -c "CREATE ROLE pflow LOGIN PASSWORD 'pflow';"` 与 `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE pflow TO pflow;"`。
+脚本需要 `java`、`curl`、`tar` 与 `uuidgen` 命令，默认监听 `localhost:9092`，支持以下可选变量：
 
-- PostgreSQL 暴露在 `5432`
-- Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
-- Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
-- 如果某个容器启动失败，可通过 `docker compose logs <service>` 查看原因
+- `KAFKA_PORT` / `KAFKA_CONTROLLER_PORT`
+- `PFLOW_KAFKA_DATA_DIR`
+- `KAFKA_VERSION` / `KAFKA_SCALA_VERSION`
 
-### 4. 配置环境变量
+### 4. 启动 Camunda Zeebe（可选）
+
+流程服务默认以内置仓储运行，若需与 Camunda 8 集成，可通过 `scripts/camunda/run-local.sh` 下载并启动 Zeebe：
+
+```bash
+./scripts/camunda/run-local.sh start
+./scripts/camunda/run-local.sh status
+./scripts/camunda/run-local.sh stop
+```
+
+脚本同样依赖 `java`、`curl` 与 `tar`，默认网关监听 `localhost:26500`。如使用 Camunda SaaS，可直接在 `.env` 中配置远程 `CAMUNDA_URL`，无需启动本地实例。
+
+### 5. 配置环境变量
 
 将示例配置复制为仓库根目录的 `.env`（一次即可）：
 
@@ -145,9 +162,7 @@ cp .env.example .env
 
 如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
-> `.env` 中的 `POSTGRES_IMAGE`、`ZOOKEEPER_IMAGE`、`KAFKA_IMAGE`、`CAMUNDA_IMAGE` 变量可按需指向企业私有仓库或镜像加速服务，以避免 Docker Hub 拉取受限。
-
-### 5. 启动微服务
+### 6. 启动微服务
 
 建议在独立终端中分别启动各个服务（默认端口见下表，可按需覆盖 `HTTP_PORT`）：
 
@@ -164,7 +179,7 @@ cp .env.example .env
 
 启动顺序建议为：先运行依赖基础设施与 API Gateway，再依次启动领域服务。可借助 `air`、`fresh` 等热加载工具提升开发效率。
 
-### 6. 前端控制台
+### 7. 前端控制台
 
 ```bash
 cd apps/frontend

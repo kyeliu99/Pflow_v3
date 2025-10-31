@@ -1,98 +1,140 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ACTION=${1:-start}
 DATA_DIR="${PFLOW_POSTGRES_DATA_DIR:-.data/postgres}"
-CONTAINER_NAME="${PFLOW_POSTGRES_CONTAINER:-pflow-postgres}"
-IMAGE="${POSTGRES_IMAGE:-postgres:16}"
-HOST_PORT="${POSTGRES_PORT:-5432}"
-REQUESTED_HOST_PORT="${POSTGRES_PORT+x}"
+PORT="${POSTGRES_PORT:-5432}"
+HOST="${POSTGRES_HOST:-127.0.0.1}"
 SUPERUSER="${POSTGRES_SUPERUSER:-postgres}"
 PASSWORD="${POSTGRES_PASSWORD:-postgres}"
-DB="${POSTGRES_DB:-postgres}"
+LOG_FILE="${DATA_DIR}/postgres.log"
+BIN_DIR="${PFLOW_POSTGRES_BIN_DIR:-}"
+SKIP_BOOTSTRAP="${PFLOW_POSTGRES_SKIP_BOOTSTRAP:-}"
 
-mkdir -p "${DATA_DIR}"
-
-if ! command -v docker >/dev/null 2>&1; then
-  echo "docker command not found. please install docker before running this helper." >&2
-  exit 1
+if [[ -n "${BIN_DIR}" ]]; then
+  PATH="${BIN_DIR}:${PATH}"
 fi
 
-if docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
-  echo "postgres container ${CONTAINER_NAME} already running"
-else
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
-    echo "starting existing postgres container ${CONTAINER_NAME}"
-    if ! docker start "${CONTAINER_NAME}" >/dev/null 2>&1; then
-      echo "failed to start container ${CONTAINER_NAME}. ensure the port mapping is free or recreate the container." >&2
-      exit 1
-    fi
-  else
-    echo "creating postgres container ${CONTAINER_NAME} (image ${IMAGE})"
-    ATTEMPT_PORT="${HOST_PORT}"
-    MAX_OFFSET=${PFLOW_POSTGRES_PORT_SEARCH_RANGE:-10}
-    if ! [[ "${MAX_OFFSET}" =~ ^[0-9]+$ ]]; then
-      echo "PFLOW_POSTGRES_PORT_SEARCH_RANGE must be a non-negative integer" >&2
-      exit 1
-    fi
-    while true; do
-      TMP_LOG="$(mktemp)"
-      set +e
-      docker run -d \
-        --name "${CONTAINER_NAME}" \
-        -e POSTGRES_USER="${SUPERUSER}" \
-        -e POSTGRES_PASSWORD="${PASSWORD}" \
-        -e POSTGRES_DB="${DB}" \
-        -p "${ATTEMPT_PORT}:5432" \
-        -v "$(pwd)/${DATA_DIR}:/var/lib/postgresql/data" \
-        "${IMAGE}" >/dev/null 2>"${TMP_LOG}"
-      STATUS=$?
-      set -e
-      if [ ${STATUS} -eq 0 ]; then
-        HOST_PORT="${ATTEMPT_PORT}"
-        rm -f "${TMP_LOG}"
-        break
-      fi
-
-      if grep -qi "port is already allocated" "${TMP_LOG}"; then
-        rm -f "${TMP_LOG}"
-        if [ -n "${REQUESTED_HOST_PORT}" ]; then
-          echo "host port ${ATTEMPT_PORT} is already in use. set POSTGRES_PORT to an available port or stop the conflicting service." >&2
-          exit 1
-        fi
-
-        if [ ${MAX_OFFSET} -le 0 ]; then
-          echo "unable to find a free port for postgres within the search range. set POSTGRES_PORT to a specific free port." >&2
-          exit 1
-        fi
-
-        NEXT_PORT=$((ATTEMPT_PORT + 1))
-        echo "port ${ATTEMPT_PORT} is occupied, trying ${NEXT_PORT} instead..."
-        ATTEMPT_PORT=${NEXT_PORT}
-        MAX_OFFSET=$((MAX_OFFSET - 1))
-        continue
-      fi
-
-      cat "${TMP_LOG}" >&2
-      rm -f "${TMP_LOG}"
-      exit ${STATUS}
-    done
-  fi
-fi
-
-RETRIES=30
-SLEEP=2
-while ! docker exec "${CONTAINER_NAME}" pg_isready -U "${SUPERUSER}" >/dev/null 2>&1; do
-  if [ ${RETRIES} -le 0 ]; then
-    echo "postgres container failed to become ready" >&2
+require_command() {
+  local cmd="$1"
+  if ! command -v "${cmd}" >/dev/null 2>&1; then
+    echo "missing required command: ${cmd}. please ensure PostgreSQL client tools are installed and available on PATH." >&2
     exit 1
   fi
-  echo "waiting for postgres to become available..."
-  sleep ${SLEEP}
-  RETRIES=$((RETRIES - 1))
-  SLEEP=$((SLEEP + 1))
-  if [ ${SLEEP} -gt 5 ]; then
-    SLEEP=5
-  fi
-done
+}
 
-echo "postgres container ${CONTAINER_NAME} is ready on port ${HOST_PORT}"
+start_cluster() {
+  mkdir -p "${DATA_DIR}"
+
+  if [[ ! -f "${DATA_DIR}/PG_VERSION" ]]; then
+    require_command initdb
+    require_command pg_ctl
+
+    local pwfile
+    pwfile="$(mktemp)"
+    trap 'rm -f "${pwfile}"' EXIT
+    printf '%s\n' "${PASSWORD}" >"${pwfile}"
+
+    echo "initialising postgres data directory at ${DATA_DIR}"
+    initdb -D "${DATA_DIR}" -U "${SUPERUSER}" --pwfile="${pwfile}" --auth-host=scram-sha-256 --auth-local=trust >/dev/null
+
+    {
+      echo "listen_addresses = '${HOST}'"
+      echo "port = ${PORT}"
+      echo "max_connections = 100"
+      echo "wal_level = replica"
+    } >>"${DATA_DIR}/postgresql.conf"
+
+    # Ensure password based access from localhost works out of the box.
+    if ! grep -q "127.0.0.1/32" "${DATA_DIR}/pg_hba.conf"; then
+      {
+        echo "host    all             all             127.0.0.1/32            scram-sha-256"
+        echo "host    all             all             ::1/128                 scram-sha-256"
+      } >>"${DATA_DIR}/pg_hba.conf"
+    fi
+  fi
+
+  require_command pg_ctl
+  if pg_ctl -D "${DATA_DIR}" status >/dev/null 2>&1; then
+    echo "postgres already running from ${DATA_DIR}"
+  else
+    echo "starting postgres on ${HOST}:${PORT}"
+    pg_ctl -D "${DATA_DIR}" -l "${LOG_FILE}" -o "-p ${PORT} -h ${HOST}" start >/dev/null
+  fi
+
+  wait_for_ready
+
+  if [[ -z "${SKIP_BOOTSTRAP}" ]]; then
+    echo "running database bootstrap"
+    POSTGRES_HOST="${HOST}" \
+    POSTGRES_PORT="${PORT}" \
+    POSTGRES_SUPERUSER="${SUPERUSER}" \
+    PGPASSWORD="${PASSWORD}" \
+    ./scripts/postgres/bootstrap.sh
+  fi
+
+  echo "postgres ready: postgres://${SUPERUSER}:***@${HOST}:${PORT}/postgres"
+}
+
+stop_cluster() {
+  if [[ ! -f "${DATA_DIR}/PG_VERSION" ]]; then
+    echo "no postgres cluster found in ${DATA_DIR}" >&2
+    exit 0
+  fi
+
+  require_command pg_ctl
+  if ! pg_ctl -D "${DATA_DIR}" status >/dev/null 2>&1; then
+    echo "postgres is not running"
+    exit 0
+  fi
+
+  echo "stopping postgres"
+  pg_ctl -D "${DATA_DIR}" stop -m fast >/dev/null
+  echo "postgres stopped"
+}
+
+status_cluster() {
+  if [[ ! -f "${DATA_DIR}/PG_VERSION" ]]; then
+    echo "postgres is not initialised"
+    exit 1
+  fi
+
+  if pg_ctl -D "${DATA_DIR}" status; then
+    wait_for_ready
+  else
+    exit 1
+  fi
+}
+
+wait_for_ready() {
+  require_command pg_isready
+  local retries=30
+  local delay=1
+  while ! pg_isready -h "${HOST}" -p "${PORT}" -U "${SUPERUSER}" >/dev/null 2>&1; do
+    if [[ ${retries} -le 0 ]]; then
+      echo "postgres failed to become ready" >&2
+      exit 1
+    fi
+    sleep "${delay}"
+    retries=$((retries - 1))
+    if [[ ${delay} -lt 5 ]]; then
+      delay=$((delay + 1))
+    fi
+  done
+}
+
+case "${ACTION}" in
+  start)
+    start_cluster
+    ;;
+  stop)
+    stop_cluster
+    ;;
+  status)
+    status_cluster
+    ;;
+  *)
+    echo "usage: $0 [start|stop|status]" >&2
+    exit 1
+    ;;
+esac
