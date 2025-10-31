@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/form/internal/form"
+	formcmp "github.com/pflow/components/form"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -14,18 +14,20 @@ import (
 
 func main() {
 	cfg := config.Load()
-	db := database.Connect()
+	dsn := cfg.DatabaseDSN("form")
+	db := database.ConnectWithDSN("form", dsn)
 
-	if err := db.AutoMigrate(&form.Form{}); err != nil {
+	if err := db.AutoMigrate(&formcmp.Form{}); err != nil {
 		log.Fatalf("form service: failed to run migrations: %v", err)
 	}
 
-	repository := form.NewRepository(db)
+	repository := formcmp.NewGormRepository(db)
+	handler := formcmp.NewHandler(repository)
 
 	server := httpx.New()
-	form.RegisterRoutes(server.Router, repository)
+	handler.Mount(server.Router, "")
 
-	port := cfg.ResolveHTTPPort("8081")
+	port := cfg.ResolveServiceHTTPPort("form", "8081")
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("form service listening on %s", addr)
 

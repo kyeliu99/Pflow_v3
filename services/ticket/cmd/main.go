@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/ticket/internal/ticket"
+	ticketcmp "github.com/pflow/components/ticket"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -14,18 +14,20 @@ import (
 
 func main() {
 	cfg := config.Load()
-	db := database.Connect()
+	dsn := cfg.DatabaseDSN("ticket")
+	db := database.ConnectWithDSN("ticket", dsn)
 
-	if err := db.AutoMigrate(&ticket.Ticket{}); err != nil {
+	if err := db.AutoMigrate(&ticketcmp.Ticket{}); err != nil {
 		log.Fatalf("ticket service: failed to run migrations: %v", err)
 	}
 
-	repository := ticket.NewRepository(db)
+	repository := ticketcmp.NewGormRepository(db)
+	handler := ticketcmp.NewHandler(repository)
 
 	server := httpx.New()
-	ticket.RegisterRoutes(server.Router, repository)
+	handler.Mount(server.Router, "")
 
-	port := cfg.ResolveHTTPPort("8083")
+	port := cfg.ResolveServiceHTTPPort("ticket", "8083")
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("ticket service listening on %s", addr)
 

@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/workflow/internal/workflow"
+	workflowcmp "github.com/pflow/components/workflow"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -14,18 +14,20 @@ import (
 
 func main() {
 	cfg := config.Load()
-	db := database.Connect()
+	dsn := cfg.DatabaseDSN("workflow")
+	db := database.ConnectWithDSN("workflow", dsn)
 
-	if err := db.AutoMigrate(&workflow.Definition{}); err != nil {
+	if err := db.AutoMigrate(&workflowcmp.Definition{}); err != nil {
 		log.Fatalf("workflow service: failed to run migrations: %v", err)
 	}
 
-	repository := workflow.NewRepository(db)
+	repository := workflowcmp.NewGormRepository(db)
+	handler := workflowcmp.NewHandler(repository)
 
 	server := httpx.New()
-	workflow.RegisterRoutes(server.Router, repository)
+	handler.Mount(server.Router, "")
 
-	port := cfg.ResolveHTTPPort("8084")
+	port := cfg.ResolveServiceHTTPPort("workflow", "8084")
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("workflow service listening on %s", addr)
 

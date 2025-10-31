@@ -24,6 +24,9 @@ type AppConfig struct {
 	IdentityServiceURL string
 	TicketServiceURL   string
 	WorkflowServiceURL string
+
+	ServiceDatabaseDSN map[string]string
+	ServiceHTTPPorts   map[string]string
 }
 
 var (
@@ -48,6 +51,9 @@ func Load() *AppConfig {
 			TicketServiceURL:   getEnv("TICKET_SERVICE_URL", "http://localhost:8083"),
 			WorkflowServiceURL: getEnv("WORKFLOW_SERVICE_URL", "http://localhost:8084"),
 		}
+
+		cfg.ServiceDatabaseDSN = collectServiceValues("DATABASE_DSN")
+		cfg.ServiceHTTPPorts = collectServiceValues("HTTP_PORT")
 	})
 
 	return cfg
@@ -161,19 +167,65 @@ func IsEnvSet(key string) bool {
 // ResolveHTTPPort returns the configured HTTP port or a service-specific default.
 func (cfg *AppConfig) ResolveHTTPPort(fallback string) string {
 	if cfg == nil {
+		if fallback == "" {
+			return defaultHTTPPort
+		}
 		return fallback
 	}
 
 	port := strings.TrimSpace(cfg.HTTPPort)
 	if port == "" {
+		if fallback == "" {
+			return defaultHTTPPort
+		}
 		return fallback
 	}
 
 	if port == defaultHTTPPort && !IsEnvSet("HTTP_PORT") {
+		if fallback == "" {
+			return defaultHTTPPort
+		}
 		return fallback
 	}
 
 	return port
+}
+
+// ResolveServiceHTTPPort resolves a service-scoped HTTP port with fallback support.
+func (cfg *AppConfig) ResolveServiceHTTPPort(service, fallback string) string {
+	if cfg == nil {
+		if fallback == "" {
+			return defaultHTTPPort
+		}
+		return fallback
+	}
+
+	serviceKey := normalizeServiceKey(service)
+	if port, ok := cfg.ServiceHTTPPorts[serviceKey]; ok {
+		port = strings.TrimSpace(port)
+		if port != "" {
+			return port
+		}
+	}
+
+	return cfg.ResolveHTTPPort(fallback)
+}
+
+// DatabaseDSN resolves the database DSN for a service, defaulting to PostgresDSN.
+func (cfg *AppConfig) DatabaseDSN(service string) string {
+	if cfg == nil {
+		return ""
+	}
+
+	serviceKey := normalizeServiceKey(service)
+	if dsn, ok := cfg.ServiceDatabaseDSN[serviceKey]; ok {
+		dsn = strings.TrimSpace(dsn)
+		if dsn != "" {
+			return dsn
+		}
+	}
+
+	return cfg.PostgresDSN
 }
 
 // MustGet returns the loaded configuration or exits the process.
@@ -182,4 +234,40 @@ func MustGet() *AppConfig {
 		log.Fatal("config not loaded")
 	}
 	return cfg
+}
+
+func collectServiceValues(suffix string) map[string]string {
+	values := make(map[string]string)
+	normalizedSuffix := "_" + strings.ToUpper(strings.TrimSpace(suffix))
+
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		key := parts[0]
+		val := ""
+		if len(parts) == 2 {
+			val = parts[1]
+		}
+
+		upperKey := strings.ToUpper(strings.TrimSpace(key))
+		if !strings.HasSuffix(upperKey, normalizedSuffix) {
+			continue
+		}
+
+		name := strings.TrimSuffix(upperKey, normalizedSuffix)
+		name = strings.TrimPrefix(name, "PFLOW_")
+		name = strings.Trim(name, "_")
+		if name == "" {
+			continue
+		}
+
+		values[strings.ToLower(name)] = strings.TrimSpace(val)
+	}
+
+	return values
+}
+
+func normalizeServiceKey(service string) string {
+	key := strings.ToLower(strings.TrimSpace(service))
+	key = strings.ReplaceAll(key, "-", "_")
+	return key
 }

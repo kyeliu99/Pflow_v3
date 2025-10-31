@@ -52,7 +52,7 @@ func main() {
 
 	server.Router.Route("/api", gw.registerRoutes)
 
-	port := cfg.ResolveHTTPPort("8080")
+	port := cfg.ResolveServiceHTTPPort("gateway", "8080")
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("gateway listening on %s", addr)
 

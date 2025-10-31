@@ -11,6 +11,7 @@ apps/
   frontend/           # React + Vite 控制台，封装 npm SDK 的演示入口
 libs/
   shared/             # Go 共享库：配置、数据库、消息队列、HTTP、观测等
+  components/         # 可复用的领域服务组件（表单、身份、工单、流程）
 services/
   gateway/            # API 聚合 & BFF，统一认证、路由、OpenAPI 暴露点
   identity/           # 身份与权限管理，面向多角色的 RBAC 能力
@@ -26,6 +27,32 @@ services/
 - **通信协议**：HTTP/JSON + Kafka 事件流 (`github.com/segmentio/kafka-go`)
 - **数据持久化**：PostgreSQL (`gorm.io/gorm` + `gorm.io/driver/postgres`)
 - **配置与观测**：`github.com/joho/godotenv`、Prometheus 客户端 (`github.com/prometheus/client_golang`)
+
+## 可复用领域组件
+
+为提升可复用性，所有领域逻辑均沉淀在 `libs/components` 模块中，遵循“领域模型 + 仓储接口 + HTTP Handler”三层结构：
+
+- `components/form`、`components/identity`、`components/ticket`、`components/workflow` 均导出 GORM 模型、仓储实现与基于 chi 的路由注册器。
+- 每个 Handler 均提供 `Mount(router, basePath)` 方法，可在任意 Go 服务中按需挂载，默认路径分别为 `/forms`、`/users`、`/tickets` 与 `/workflows`。
+- 若需要自定义存储，可实现对应的 `Repository` 接口并传入 `NewHandler`，领域层无需修改。
+
+示例（在自定义服务中复用工单组件）：
+
+```go
+import (
+    ticketcmp "github.com/pflow/components/ticket"
+    "github.com/go-chi/chi/v5"
+    "gorm.io/gorm"
+)
+
+func wire(db *gorm.DB, router chi.Router) {
+    repo := ticketcmp.NewGormRepository(db)
+    handler := ticketcmp.NewHandler(repo)
+    handler.Mount(router, "/api/tickets")
+}
+```
+
+Gateway 及各领域微服务即是通过上述组件拼装而成，这意味着同一套业务能力可以被二次包装为内部 RPC 服务、任务处理器或按需暴露为新的 API。
 
 ## 本地开发与调试
 
@@ -94,7 +121,7 @@ cp .env.example .env
 
 所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。
 
-> `.env.example` 不再预设统一的 `HTTP_PORT`，各服务会在未显式设置时使用推荐端口（Gateway=8080、Form=8081、Identity=8082、Ticket=8083、Workflow=8084）。如需修改，请在运行命令前通过环境变量覆盖，例如 `HTTP_PORT=9000 go run ./cmd/main.go`。
+> `.env.example` 提供 `FORM_DATABASE_DSN`/`FORM_HTTP_PORT` 等服务级变量：若未配置则自动回退到 `POSTGRES_DSN` 与推荐端口（Gateway=8080、Form=8081、Identity=8082、Ticket=8083、Workflow=8084），也可以继续通过全局 `HTTP_PORT`/`POSTGRES_DSN` 快速覆盖。运行命令前按需设置对应环境变量即可，例如 `FORM_HTTP_PORT=9001 go run ./cmd/main.go`。
 
 如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
@@ -112,11 +139,13 @@ cp .env.example .env
 | Ticket Service | `services/ticket` | 8083 | `go run ./cmd/main.go` |
 | Workflow Service | `services/workflow` | 8084 | `go run ./cmd/main.go` |
 
+> 服务在启动时会调用 `cfg.DatabaseDSN(<service>)` 与 `cfg.ResolveServiceHTTPPort(<service>, <fallback>)`：只需在 `.env` 或运行命令前设置 `FORM_DATABASE_DSN`、`TICKET_HTTP_PORT` 等变量即可让组件无缝连接不同的数据库实例或监听端口。`libs/shared/database.ConnectWithDSN` 会缓存命名连接，便于在同一进程中复用多个数据源。
+
 启动顺序建议为：先运行依赖基础设施与 API Gateway，再依次启动领域服务。可借助 `air`、`fresh` 等热加载工具提升开发效率。
 
 ### 6. 前端控制台
 
-2. 前端构建验证
+```bash
 cd apps/frontend
 # 验证代码可正常打包（无语法错误）
 npm run build

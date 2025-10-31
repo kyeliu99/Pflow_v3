@@ -1,0 +1,11 @@
+go 1.21
+
+use (
+	./libs/components
+	./libs/shared
+	./services/form
+	./services/gateway
+	./services/identity
+	./services/ticket
+	./services/workflow
+)

@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/pflow/identity/internal/user"
+	identitycmp "github.com/pflow/components/identity"
 
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
@@ -14,18 +14,20 @@ import (
 
 func main() {
 	cfg := config.Load()
-	db := database.Connect()
+	dsn := cfg.DatabaseDSN("identity")
+	db := database.ConnectWithDSN("identity", dsn)
 
-	if err := db.AutoMigrate(&user.User{}); err != nil {
+	if err := db.AutoMigrate(&identitycmp.User{}); err != nil {
 		log.Fatalf("identity service: failed to run migrations: %v", err)
 	}
 
-	repository := user.NewRepository(db)
+	repository := identitycmp.NewGormRepository(db)
+	handler := identitycmp.NewHandler(repository)
 
 	server := httpx.New()
-	user.RegisterRoutes(server.Router, repository)
+	handler.Mount(server.Router, "")
 
-	port := cfg.ResolveHTTPPort("8082")
+	port := cfg.ResolveServiceHTTPPort("identity", "8082")
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("identity service listening on %s", addr)
 
