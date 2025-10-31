@@ -52,6 +52,25 @@ export interface Ticket {
   updatedAt: string;
 }
 
+export interface TicketSubmission {
+  id: string;
+  clientReference: string;
+  status: string;
+  ticket?: Ticket;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface TicketQueueMetrics {
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  oldestPendingSeconds: number;
+}
+
 export interface WorkflowDefinition {
   id: string;
   name: string;
@@ -74,7 +93,11 @@ export interface ItemResponse<T> {
 export interface OverviewResponse {
   data: {
     forms: { total: number };
-    tickets: { total: number; byStatus: Record<string, number> };
+    tickets: {
+      total: number;
+      byStatus: Record<string, number>;
+      queue: TicketQueueMetrics;
+    };
     users: { total: number };
     workflows: { total: number; published: number };
   };
@@ -102,6 +125,7 @@ export interface CreateTicketPayload {
   assigneeId?: string;
   priority?: string;
   metadata?: Record<string, unknown>;
+  clientRequestId?: string;
 }
 
 export interface CreateWorkflowPayload {
@@ -155,6 +179,11 @@ function mapUser(apiUser: any): User {
   };
 }
 
+function toNumber(value: any): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function mapTicket(apiTicket: any): Ticket {
   return {
     id: String(apiTicket.id),
@@ -167,6 +196,19 @@ function mapTicket(apiTicket: any): Ticket {
     metadata: apiTicket.payload ?? {},
     createdAt: apiTicket.created_at,
     updatedAt: apiTicket.updated_at,
+  };
+}
+
+function mapTicketSubmission(apiSubmission: any): TicketSubmission {
+  return {
+    id: String(apiSubmission.id),
+    clientReference: String(apiSubmission.client_reference),
+    status: apiSubmission.status,
+    ticket: apiSubmission.ticket ? mapTicket(apiSubmission.ticket) : undefined,
+    errorMessage: apiSubmission.error_message ?? undefined,
+    createdAt: apiSubmission.created_at,
+    updatedAt: apiSubmission.updated_at,
+    completedAt: apiSubmission.completed_at ?? undefined,
   };
 }
 
@@ -223,8 +265,10 @@ export async function listTickets(): Promise<ListResponse<Ticket>> {
   return { data: Array.isArray(data) ? data.map(mapTicket) : [] };
 }
 
-export async function createTicket(payload: CreateTicketPayload): Promise<ItemResponse<Ticket>> {
-  const response = await apiClient.post("tickets/", {
+export async function submitTicket(
+  payload: CreateTicketPayload,
+): Promise<ItemResponse<TicketSubmission>> {
+  const response = await apiClient.post("tickets/submissions/", {
     title: payload.title,
     description: "",
     form_id: Number(payload.formId),
@@ -232,13 +276,32 @@ export async function createTicket(payload: CreateTicketPayload): Promise<ItemRe
     priority: payload.priority ?? "medium",
     status: payload.status ?? "open",
     payload: payload.metadata ?? {},
+    client_reference: payload.clientRequestId ?? undefined,
   });
-  return { data: mapTicket(response.data) };
+  return { data: mapTicketSubmission(response.data) };
+}
+
+export async function getTicketSubmission(
+  submissionId: string,
+): Promise<ItemResponse<TicketSubmission>> {
+  const response = await apiClient.get(`tickets/submissions/${submissionId}/`);
+  return { data: mapTicketSubmission(response.data) };
 }
 
 export async function resolveTicket(id: string): Promise<ItemResponse<Ticket>> {
   const response = await apiClient.post(`tickets/${id}/resolve/`);
   return { data: mapTicket(response.data) };
+}
+
+export async function getTicketQueueMetrics(): Promise<TicketQueueMetrics> {
+  const { data } = await apiClient.get("tickets/queue-metrics/");
+  return {
+    pending: toNumber(data.pending),
+    processing: toNumber(data.processing),
+    completed: toNumber(data.completed),
+    failed: toNumber(data.failed),
+    oldestPendingSeconds: toNumber(data.oldestPendingSeconds),
+  };
 }
 
 export async function listWorkflows(): Promise<ListResponse<WorkflowDefinition>> {

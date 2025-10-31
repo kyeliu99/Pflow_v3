@@ -15,6 +15,8 @@ SERVICE_ENDPOINTS: Dict[str, str] = {
     "forms": settings.FORM_SERVICE_URL.rstrip("/") + "/api/forms/",
     "users": settings.IDENTITY_SERVICE_URL.rstrip("/") + "/api/users/",
     "tickets": settings.TICKET_SERVICE_URL.rstrip("/") + "/api/tickets/",
+    "ticket_submissions": settings.TICKET_SERVICE_URL.rstrip("/") + "/api/tickets/submissions/",
+    "ticket_queue_metrics": settings.TICKET_SERVICE_URL.rstrip("/") + "/api/tickets/queue-metrics/",
     "workflows": settings.WORKFLOW_SERVICE_URL.rstrip("/") + "/api/workflows/",
     "forms_health": settings.FORM_SERVICE_URL.rstrip("/") + "/api/healthz/",
     "identity_health": settings.IDENTITY_SERVICE_URL.rstrip("/") + "/api/healthz/",
@@ -110,12 +112,34 @@ class TicketDetailView(DetailProxyView):
     service_key = "tickets"
 
 
+class TicketSubmissionCollectionView(APIView):
+    def post(self, request: Request) -> Response:
+        return _forward_request("POST", SERVICE_ENDPOINTS["ticket_submissions"], request)
+
+
+class TicketSubmissionDetailView(APIView):
+    def get(self, request: Request, submission_id: str) -> Response:
+        return _forward_request(
+            "GET",
+            SERVICE_ENDPOINTS["ticket_submissions"],
+            request,
+            f"{submission_id}/",
+        )
+
+
 class WorkflowCollectionView(CollectionProxyView):
     service_key = "workflows"
 
 
 class WorkflowDetailView(DetailProxyView):
     service_key = "workflows"
+
+
+class TicketQueueMetricsView(APIView):
+    def get(self, request: Request) -> Response:
+        return _forward_request(
+            "GET", SERVICE_ENDPOINTS["ticket_queue_metrics"], request
+        )
 
 
 @api_view(["GET"])
@@ -149,6 +173,22 @@ def overview(_: Request) -> Response:
     users = list(_fetch_collection(SERVICE_ENDPOINTS["users"]))
     workflows = list(_fetch_collection(SERVICE_ENDPOINTS["workflows"]))
 
+    try:
+        queue_response = requests.get(
+            SERVICE_ENDPOINTS["ticket_queue_metrics"],
+            timeout=settings.SERVICE_TIMEOUT,
+        )
+        queue_response.raise_for_status()
+        queue_metrics = queue_response.json()
+    except (requests.RequestException, ValueError):  # pragma: no cover - network errors
+        queue_metrics = {
+            "pending": 0,
+            "processing": 0,
+            "completed": 0,
+            "failed": 0,
+            "oldestPendingSeconds": 0,
+        }
+
     ticket_status_counts: Dict[str, int] = {}
     for ticket in tickets:
         status_value = str(ticket.get("status", "unknown"))
@@ -159,7 +199,11 @@ def overview(_: Request) -> Response:
     return Response(
         {
             "forms": {"total": len(forms)},
-            "tickets": {"total": len(tickets), "byStatus": ticket_status_counts},
+            "tickets": {
+                "total": len(tickets),
+                "byStatus": ticket_status_counts,
+                "queue": queue_metrics,
+            },
             "users": {"total": len(users)},
             "workflows": {"total": len(workflows), "published": published_workflows},
         }

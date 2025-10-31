@@ -17,8 +17,9 @@ services/
 
 技术栈全部基于官方与主流开源生态：
 
-- 后端：Django 5 · Django REST Framework · django-cors-headers · requests
+- 后端：Django 5 · Django REST Framework · Celery 5 · django-cors-headers · requests
 - 数据库：PostgreSQL 16（每个服务拥有独立库）
+- 消息队列：Redis 7 + Celery Worker（处理工单提交峰值）
 - 前端：React 18 · Vite · Chakra UI · TanStack Query · Axios
 
 ## 本地环境准备
@@ -26,7 +27,8 @@ services/
 1. Python 3.12+
 2. Node.js 18+ 与 npm
 3. PostgreSQL 16（建议通过包管理器或企业自建数据库，而非 Docker Compose）
-4. 可选：Redis/Kafka/Camunda 等后续拓展依赖
+4. Redis 7+（Celery 队列使用，确保开启持久化或连接高可用实例）
+5. 可选：Kafka、Camunda 等后续拓展依赖
 
 > 本仓库不再维护 Docker Compose 方案，如需要容器化可在后续阶段自行编排。
 
@@ -65,7 +67,7 @@ cp .env.example .env
 | Gateway | `GATEWAY_DATABASE_URL`、`FORM_SERVICE_URL`、`IDENTITY_SERVICE_URL`、`TICKET_SERVICE_URL`、`WORKFLOW_SERVICE_URL` |
 | Form | `FORM_DATABASE_URL`、`DJANGO_ALLOWED_HOSTS`、`DJANGO_SECRET_KEY` |
 | Identity | `IDENTITY_DATABASE_URL` |
-| Ticket | `TICKET_DATABASE_URL` |
+| Ticket | `TICKET_DATABASE_URL`、`TICKET_BROKER_URL`、`TICKET_RESULT_BACKEND`、`TICKET_QUEUE_NAME` |
 | Workflow | `WORKFLOW_DATABASE_URL` |
 | Frontend | `VITE_GATEWAY_URL` |
 
@@ -112,6 +114,29 @@ source .venv/bin/activate
 python manage.py migrate
 ```
 
+## 启动 Redis 与 Celery Worker
+
+工单服务的高并发写入通过 Celery + Redis 队列处理，请确保 Redis 已运行：
+
+```bash
+# 以 macOS 为例
+brew install redis
+brew services start redis
+
+# 或使用 Linux 原生包管理器
+sudo systemctl start redis
+```
+
+随后在 `services/ticket` 目录启动 Celery worker：
+
+```bash
+cd services/ticket
+source .venv/bin/activate
+celery -A ticket_service worker --loglevel=info
+```
+
+Celery 会监听 `TICKET_QUEUE_NAME` 队列（默认 `ticket_submissions`），并自动处理通过 API 提交的工单创建任务。
+
 ## 启动服务
 
 为方便调试，推荐在多个终端窗口中分别启动服务：
@@ -143,6 +168,8 @@ python manage.py runserver 0.0.0.0:8002
 cd services/ticket
 source .venv/bin/activate
 export TICKET_DATABASE_URL=postgresql://pflow_ticket:pflow_ticket@localhost:5432/pflow_ticket
+export TICKET_BROKER_URL=redis://localhost:6379/0
+export TICKET_RESULT_BACKEND=redis://localhost:6379/0
 python manage.py runserver 0.0.0.0:8003
 
 # Workflow service
@@ -151,6 +178,8 @@ source .venv/bin/activate
 export WORKFLOW_DATABASE_URL=postgresql://pflow_workflow:pflow_workflow@localhost:5432/pflow_workflow
 python manage.py runserver 0.0.0.0:8004
 ```
+
+> 提示：工单队列需要独立的 Celery worker（见上文），请在另一个终端保持 `celery -A ticket_service worker` 运行，以避免高并发场景下的请求丢失。
 
 所有服务启动后，API 网关会在 `/api` 下转发 CRUD 接口，同时提供 `/api/overview/` 聚合指标与 `/api/healthz/` 健康探针。
 
@@ -163,6 +192,8 @@ npm run dev
 ```
 
 默认情况下前端通过 `VITE_GATEWAY_URL` 指向 `http://localhost:8000/api/`，可在 `.env` 或命令行中修改。运行后在 `http://localhost:5173` 访问控制台，可体验表单库、工单面板、流程设计器与系统概览模块。
+
+> 控制台在提交工单时会自动生成客户端请求 ID，并在队列处理完成后自动刷新列表，避免网络抖动导致的重复提交。
 
 ## 测试
 
@@ -178,21 +209,31 @@ python manage.py test
 npm run build
 ```
 
+## 技术选型评估：Django vs Go
+
+根据当前需求，微服务需要快速迭代、具备成熟的 ORM/序列化能力，并能够与 Celery 等异步组件无缝集成：
+
+- **快速建模能力**：Django + Django REST Framework 提供开箱即用的模型迁移、序列化与验证体系，适合频繁调整业务字段的场景；Go 则需要手动组合 Gin/Fiber + GORM/SQLC 等组件，开发效率略低。
+- **官方生态与长期维护**：本方案完全依赖官方维护或基金会托管的库（Django、DRF、Celery、Redis 驱动等），避免引入个人仓库依赖；Go 虽性能优异，但在表单/流程这类数据密集场景并无决定性优势。
+- **异步与水平扩展**：Celery 与 Redis 深度集成，提供任务重试、监控等能力，满足工单高并发创建需求；若后续需要进一步扩容，可通过增加 worker 实例扩展吞吐。
+- **多语言协同**：前端和运营团队更熟悉 Django 模型定义与 Admin 后台，可降低学习成本；若需要引入高性能计算模块，可在后续以 gRPC/HTTP 方式接入 Go 服务。
+
+综合评估后，继续采用 Django 生态能够在交付周期、团队技能与稳定性之间取得最佳平衡，同时保留未来按需引入 Go 微服务的空间。
+
 ## API 约定
 
 - 表单服务：`/api/forms/` 提供 CRUD，Schema 与字段以 JSON 表达。
 - 身份服务：`/api/users/` 维护协作者列表。
-- 工单服务：`/api/tickets/` 支持状态筛选、`POST /api/tickets/{id}/resolve/` 快捷完成工单。
+- 工单服务：`POST /api/tickets/submissions/` 通过队列异步创建工单、`GET /api/tickets/submissions/{id}/` 查询排队结果、`POST /api/tickets/{id}/resolve/` 快捷完成工单。
 - 流程服务：`/api/workflows/` 管理流程与步骤，`POST /api/workflows/{id}/publish/` 激活流程。
-- 网关：统一转发上述接口，`GET /api/overview/` 聚合各服务的数据量与状态分布。
+- 网关：统一转发上述接口，`GET /api/overview/` 聚合各服务的数据量与状态分布，并提供 `GET /api/tickets/queue-metrics/` 反馈队列运行状况。
 
 如需对接其他系统，可直接消费各服务 API，或在 Gateway 中新增聚合路由。
 
 ## 后续规划
 
 1. 集成认证与多租户能力（JWT/OIDC）。
-2. 引入 Celery/Async worker 处理长耗时任务。
-3. 扩展流程服务与 Camunda/Zeebe 的互操作。
-4. 在前端引入可视化拖拽编排（如 React Flow）。
+2. 扩展流程服务与 Camunda/Zeebe 的互操作。
+3. 在前端引入可视化拖拽编排（如 React Flow）。
 
 欢迎在此基础上继续扩展业务能力，或根据企业需求自定义部署拓扑。

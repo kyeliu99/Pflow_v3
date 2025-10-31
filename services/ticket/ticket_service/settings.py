@@ -19,6 +19,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_celery_results",
     "rest_framework",
     "corsheaders",
     "tickets",
@@ -63,18 +64,32 @@ def _database_settings() -> Dict[str, Dict[str, str]]:
         or "postgresql://pflow_ticket:pflow_ticket@localhost:5434/pflow_ticket"
     )
     parsed = urlparse(url)
-    if parsed.scheme not in {"postgres", "postgresql"}:
-        raise ValueError("Only PostgreSQL connection URLs are supported")
-    return {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": parsed.path.lstrip("/"),
-            "USER": parsed.username or "",
-            "PASSWORD": parsed.password or "",
-            "HOST": parsed.hostname or "localhost",
-            "PORT": str(parsed.port or 5432),
+    if parsed.scheme in {"postgres", "postgresql"}:
+        return {
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": parsed.path.lstrip("/"),
+                "USER": parsed.username or "",
+                "PASSWORD": parsed.password or "",
+                "HOST": parsed.hostname or "localhost",
+                "PORT": str(parsed.port or 5432),
+            }
         }
-    }
+
+    if parsed.scheme == "sqlite":
+        db_path = parsed.path or ":memory:"
+        if db_path.startswith("/"):
+            name = db_path
+        else:
+            name = str(BASE_DIR / db_path)
+        return {
+            "default": {
+                "ENGINE": "django.db.backends.sqlite3",
+                "NAME": name,
+            }
+        }
+
+    raise ValueError("Supported database URLs: postgresql:// or sqlite:///")
 
 
 DATABASES = _database_settings()
@@ -110,3 +125,30 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
 }
+
+
+def _broker_url() -> str:
+    return (
+        os.environ.get("TICKET_BROKER_URL")
+        or os.environ.get("CELERY_BROKER_URL")
+        or "redis://localhost:6379/0"
+    )
+
+
+CELERY_BROKER_URL = _broker_url()
+CELERY_RESULT_BACKEND = (
+    os.environ.get("TICKET_RESULT_BACKEND")
+    or os.environ.get("CELERY_RESULT_BACKEND")
+    or CELERY_BROKER_URL
+)
+CELERY_TASK_DEFAULT_QUEUE = os.environ.get("TICKET_QUEUE_NAME", "ticket_submissions")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_TRACK_STARTED = True
+CELERY_RESULT_EXTENDED = True
+
+if os.environ.get("CELERY_ALWAYS_EAGER", "false").lower() in {"1", "true", "yes"}:
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
