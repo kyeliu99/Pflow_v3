@@ -5,80 +5,75 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	ticketcmp "github.com/pflow/components/ticket"
+
 	"github.com/pflow/shared/config"
 	"github.com/pflow/shared/database"
 	"github.com/pflow/shared/httpx"
-	"github.com/pflow/shared/messaging"
+	"github.com/pflow/shared/mq"
 )
-
-type ticket struct {
-	ID         string                 `json:"id"`
-	FormID     string                 `json:"formId"`
-	WorkflowID string                 `json:"workflowId"`
-	Payload    map[string]interface{} `json:"payload"`
-	Status     string                 `json:"status"`
-}
 
 func main() {
 	cfg := config.Load()
-	database.Connect()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	dsn := cfg.DatabaseDSN("ticket")
+	db := database.ConnectWithDSN("ticket", dsn)
+
+	if err := db.AutoMigrate(&ticketcmp.Ticket{}, &ticketcmp.TicketSubmission{}); err != nil {
+		log.Fatalf("ticket service: failed to run migrations: %v", err)
+	}
+
+	repository := ticketcmp.NewGormRepository(db)
+	submissionStore := ticketcmp.NewSubmissionRepository(db)
+
+	brokers := cfg.KafkaBrokerList("ticket")
+	topic := cfg.ResolveServiceQueueTopic("ticket", cfg.KafkaTopic)
+	if len(brokers) == 0 || strings.TrimSpace(topic) == "" {
+		log.Fatalf("ticket service: kafka brokers/topic must be configured (brokers=%v topic=%s)", brokers, topic)
+	}
+
+	producer, err := mq.NewProducer(mq.ProducerConfig{
+		Brokers:  brokers,
+		Topic:    topic,
+		ClientID: fmt.Sprintf("%s-ticket-api", cfg.ServiceName),
+		Timeout:  2 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("ticket service: failed to initialise producer: %v", err)
+	}
+	defer producer.Close(context.Background())
+
+	coordinator := ticketcmp.NewQueueCoordinator(submissionStore, producer)
+
+	handler := ticketcmp.NewHandler(repository, ticketcmp.WithSubmissionCoordinator(coordinator))
 
 	server := httpx.New()
-	api := server.Engine.Group("/tickets")
-	{
-		api.GET("", listTickets)
-		api.POST("", createTicket)
-		api.GET(":id", getTicket)
-	}
+	handler.Mount(server.Router, "")
 
-	go consumeWorkflowEvents()
-
-	addr := fmt.Sprintf(":%s", cfg.HTTPPort)
+	port := cfg.ResolveServiceHTTPPort("ticket", "8083")
+	addr := fmt.Sprintf(":%s", port)
 	log.Printf("ticket service listening on %s", addr)
-	if err := server.Start(addr); err != nil {
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("ticket service: graceful shutdown error: %v", err)
+		}
+	}()
+
+	if err := server.Start(addr); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("ticket service stopped: %v", err)
 	}
-}
 
-func listTickets(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"data": []ticket{}})
-}
-
-func createTicket(c *gin.Context) {
-	var payload ticket
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	go func(t ticket) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = messaging.Publish(ctx, "ticket.created", []byte(t.ID))
-	}(payload)
-
-	c.JSON(http.StatusCreated, gin.H{"data": payload})
-}
-
-func getTicket(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"data": ticket{ID: c.Param("id"), Status: "pending"}})
-}
-
-func consumeWorkflowEvents() {
-	ctx := context.Background()
-	for {
-		msg, err := messaging.Consume(ctx)
-		if err != nil {
-			log.Printf("ticket consumer error: %v", err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-		log.Printf("ticket event received: %s", string(msg.Value))
-		if err := messaging.Commit(ctx, msg); err != nil {
-			log.Printf("ticket commit error: %v", err)
-		}
-	}
+	log.Println("ticket service stopped")
 }
