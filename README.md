@@ -11,6 +11,7 @@ apps/
   frontend/           # React + Vite 控制台，封装 npm SDK 的演示入口
 libs/
   shared/             # Go 共享库：配置、数据库、消息队列、HTTP、观测等
+  components/         # 可复用的领域服务组件（表单、身份、工单、流程）
 services/
   gateway/            # API 聚合 & BFF，统一认证、路由、OpenAPI 暴露点
   identity/           # 身份与权限管理，面向多角色的 RBAC 能力
@@ -27,17 +28,91 @@ services/
 - **数据持久化**：PostgreSQL (`gorm.io/gorm` + `gorm.io/driver/postgres`)
 - **配置与观测**：`github.com/joho/godotenv`、Prometheus 客户端 (`github.com/prometheus/client_golang`)
 
+## 可复用领域组件
+
+为提升可复用性，所有领域逻辑均沉淀在 `libs/components` 模块中，遵循“领域模型 + 仓储接口 + HTTP Handler”三层结构：
+
+- `components/form`、`components/identity`、`components/ticket`、`components/workflow` 均导出 GORM 模型、仓储实现与基于 chi 的路由注册器。
+- 每个 Handler 均提供 `Mount(router, basePath)` 方法，可在任意 Go 服务中按需挂载，默认路径分别为 `/forms`、`/users`、`/tickets` 与 `/workflows`。
+- 若需要自定义存储，可实现对应的 `Repository` 接口并传入 `NewHandler`，领域层无需修改。
+
+针对高并发场景，`components/ticket` 还额外提供：
+
+- `TicketSubmission` 模型与 `SubmissionRepository`：持久化异步请求、统计队列指标。
+- `QueueCoordinator`：负责写入数据库、发布 Kafka 消息，并通过 `SubmissionCoordinator` 接口对外暴露。
+- `QueueWorker`：消费 Kafka 消息、调用仓储落地工单，可通过 `mq.NewConsumer` 快速接入任意服务。
+
+消息队列的底层封装在 `libs/shared/mq` 中，基于 `github.com/segmentio/kafka-go` 提供 `NewProducer`、`NewConsumer` 等主流 API，避免重复配置 Dialer、重试与客户端标识。任何服务只需在配置中提供 `*_KAFKA_BROKERS`、`*_QUEUE_TOPIC` 与 `*_QUEUE_GROUP` 即可复用同一套组件。
+
+示例（在自定义服务中复用工单组件）：
+
+```go
+import (
+    ticketcmp "github.com/pflow/components/ticket"
+    "github.com/go-chi/chi/v5"
+    "gorm.io/gorm"
+)
+
+func wire(db *gorm.DB, router chi.Router) {
+    repo := ticketcmp.NewGormRepository(db)
+    handler := ticketcmp.NewHandler(repo)
+    handler.Mount(router, "/api/tickets")
+}
+```
+
+Gateway 及各领域微服务即是通过上述组件拼装而成，这意味着同一套业务能力可以被二次包装为内部 RPC 服务、任务处理器或按需暴露为新的 API。
+
 ## 本地开发与调试
 
 ### 1. 依赖准备
 
 - Go 1.21+
 - Node.js 18+
-- Docker & Docker Compose (用于启动数据库、Kafka、Camunda)
+- PostgreSQL 15+（可部署在本地或远程服务器）
+- `psql` 命令行工具（随 PostgreSQL 一并安装）
+- （可选）Docker & Docker Compose —— 仅当你希望容器化依赖服务时使用
 
-### 2. 启动基础设施
+### 2. 初始化数据库（无需 Docker）
 
-项目根目录提供 `docker-compose.yml`（见下文示例）用于拉起依赖服务。
+首次在本地调试且尚未安装 PostgreSQL 时，可以借助仓库提供的 helper 脚本快速拉起官方容器：
+
+```bash
+# 需要本机已安装 Docker，数据目录默认写入仓库根目录的 .data/postgres
+./scripts/postgres/run-local.sh
+```
+
+脚本会自动复用已有容器或创建新的 `postgres:16` 实例，并将 5432 端口映射到宿主机，适合作为开发环境的最小依赖。
+
+若已经具备 PostgreSQL 实例，可直接执行仓库自带的引导脚本创建默认账号与数据库：
+
+```bash
+# 以本地 PostgreSQL 默认超级用户为例，提前导出密码（或使用 .pgpass 文件）
+export PGPASSWORD=<postgres 密码>
+
+# 可通过以下环境变量覆盖连接信息：
+#   POSTGRES_HOST / POSTGRES_PORT          —— PostgreSQL 地址（默认 localhost:5432）
+#   POSTGRES_SUPERUSER                    —— 具有创建数据库权限的账号（默认 postgres）
+#   POSTGRES_DB                           —— 连接时使用的数据库（默认 postgres）
+./scripts/postgres/bootstrap.sh
+```
+
+`bootstrap.sh` 会重复执行 `scripts/postgres/init.sql` 并确保幂等：
+
+- 若不存在 `pflow` 角色则自动创建并设置口令 `pflow`
+- 若不存在 `pflow` 数据库则创建并将所有权授予 `pflow`
+
+如无法使用脚本，也可以手动执行以下 SQL：
+
+```sql
+CREATE ROLE pflow LOGIN PASSWORD 'pflow';
+CREATE DATABASE pflow OWNER pflow;
+```
+
+完成后，微服务即可使用 `.env` 中的默认 `POSTGRES_DSN=postgres://pflow:pflow@localhost:5432/pflow?sslmode=disable` 进行连接。
+
+### 3. （可选）使用 Docker Compose 启动依赖
+
+若希望在本地快速拉起一套隔离的依赖服务，可继续使用项目根目录的 `docker-compose.yml`（示例见后文）。
 
 - 默认 compose 会一次性拉起 PostgreSQL、Zookeeper、Kafka 与 Camunda：
 
@@ -45,12 +120,15 @@ services/
 docker compose up -d postgres zookeeper kafka camunda
 ```
 
+- PostgreSQL 容器启动时同样会自动运行 `scripts/postgres/init.sql`，确保创建 `pflow` 数据库与登录角色。
+- 如果此前已经启动过旧版本的容器导致卷内缺少该角色，可执行 `docker compose down -v postgres` 清理卷后再启动，或手动进入容器执行  `psql -U postgres -c "CREATE ROLE pflow LOGIN PASSWORD 'pflow';"` 与 `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE pflow TO pflow;"`。
+
 - PostgreSQL 暴露在 `5432`
 - Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
 - Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
 - 如果某个容器启动失败，可通过 `docker compose logs <service>` 查看原因
 
-### 3. 配置环境变量
+### 4. 配置环境变量
 
 将示例配置复制为仓库根目录的 `.env`（一次即可）：
 
@@ -58,132 +136,70 @@ docker compose up -d postgres zookeeper kafka camunda
 cp .env.example .env
 ```
 
-所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。也可以在运行命令前临时注入或覆盖变量，例如：
+所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。
 
-```bash
-SERVICE_NAME=gateway HTTP_PORT=8080 go run ./cmd/main.go
-```
+> `.env.example` 提供 `FORM_DATABASE_DSN`/`FORM_HTTP_PORT` 等服务级变量：若未配置则自动回退到 `POSTGRES_DSN` 与推荐端口（Gateway=8080、Form=8081、Identity=8082、Ticket=8083、Workflow=8084），也可以继续通过全局 `HTTP_PORT`/`POSTGRES_DSN` 快速覆盖。运行命令前按需设置对应环境变量即可，例如 `FORM_HTTP_PORT=9001 go run ./cmd/main.go`。
 
 如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
 > `.env` 中的 `POSTGRES_IMAGE`、`ZOOKEEPER_IMAGE`、`KAFKA_IMAGE`、`CAMUNDA_IMAGE` 变量可按需指向企业私有仓库或镜像加速服务，以避免 Docker Hub 拉取受限。
 
-### 4. 启动微服务
+### 5. 启动微服务
 
-每个服务独立运行，示例命令：
+建议在独立终端中分别启动各个服务（默认端口见下表，可按需覆盖 `HTTP_PORT`）：
 
-```bash
-# Gateway
-cd services/gateway && go run ./cmd/main.go
+| 服务 | 目录 | 默认端口 | 启动命令 |
+| --- | --- | --- | --- |
+| API Gateway | `services/gateway` | 8080 | `go run ./cmd/main.go` |
+| Form Service | `services/form` | 8081 | `go run ./cmd/main.go` |
+| Identity Service | `services/identity` | 8082 | `go run ./cmd/main.go` |
+| Ticket Service | `services/ticket` | 8083 | `go run ./cmd/main.go` |
+| Ticket Worker（队列消费者） | `services/ticket` | - | `go run ./cmd/worker/main.go` |
+| Workflow Service | `services/workflow` | 8084 | `go run ./cmd/main.go` |
 
-# 表单服务
-cd services/form && go run ./cmd/main.go
+> 服务在启动时会调用 `cfg.DatabaseDSN(<service>)` 与 `cfg.ResolveServiceHTTPPort(<service>, <fallback>)`：只需在 `.env` 或运行命令前设置 `FORM_DATABASE_DSN`、`TICKET_HTTP_PORT` 等变量即可让组件无缝连接不同的数据库实例或监听端口。`libs/shared/database.ConnectWithDSN` 会缓存命名连接，便于在同一进程中复用多个数据源。队列消费者同时读取 `TICKET_QUEUE_TOPIC`、`TICKET_QUEUE_GROUP` 等变量，并通过 `libs/shared/mq` 连接 Kafka。
 
-# 工单服务
-cd services/ticket && go run ./cmd/main.go
+启动顺序建议为：先运行依赖基础设施与 API Gateway，再依次启动领域服务。可借助 `air`、`fresh` 等热加载工具提升开发效率。
 
-# 身份服务
-cd services/identity && go run ./cmd/main.go
-
-# 工作流服务（Camunda）
-cd services/workflow && go run ./cmd/main.go
-```
-
-可借助 `air`, `fresh` 等热加载工具提升体验。
-
-### 5. 前端控制台
+### 6. 前端控制台
 
 ```bash
 cd apps/frontend
-npm install
-npm run dev
-```
+# 验证代码可正常打包（无语法错误）
+npm run build
 
-前端默认代理 `/api` 到 `http://localhost:8080`，可在 `vite.config.ts` 调整。
+技术选型评估
 
-## OpenAPI 与 SDK
+- **单语言栈**：所有后端微服务均以 Go 实现，依赖 `chi`、`gorm` 等主流社区项目，降低跨语言维护成本。
+- **组件化复用**：核心领域逻辑沉淀在 `libs/components`，通过 Handler + Repository 组合实现“即插即用”，适合拆装成 BFF、RPC 或后台任务。
+- **可靠的消息队列**：基于 `github.com/segmentio/kafka-go` 的 `libs/shared/mq` 统一封装生产者 / 消费者，结合 `TicketSubmission` 模型实现可重放的异步工单管道。
+- **前端防呆体验**：React 控制台利用队列指标与提交状态轮询，防止重复点击并即时反馈后台进度。
+- **无个人依赖**：所有三方库均来自活跃的官方 / 社区组织，便于企业内网镜像与安全评估。
+API 约定
+所有接口通过 Gateway 统一访问（前缀 /api），核心接口：
+服务
+接口路径与功能
+表单服务
+GET/POST/PUT/DELETE /api/forms/（表单 CRUD）
+身份服务
+GET/POST /api/users/（用户管理）、GET /api/roles/（角色查询）
+工单服务
+POST /api/tickets/submissions/（异步创建工单）GET /api/tickets/submissions/{id}/（查询状态）POST /api/tickets/{id}/resolve/（完成工单）
+流程服务
+GET/POST /api/workflows/（流程 CRUD）POST /api/workflows/{id}/publish/（激活流程）
+网关聚合
+GET /api/overview/（服务数据聚合）GET /api/tickets/queue-metrics/（队列监控）GET /api/healthz（健康检查）
 
-- Gateway 统一暴露 REST API，后续可整合 `swagger`/`openapi` 生成器。
-- `apps/frontend/src/lib/api.ts` 提供 axios 封装示例。
-- 可在 npm 包中导出 React hooks（例如 `useForms`, `useTickets`）进一步封装。
-
-## Docker Compose 示例
-
-以下 compose 片段演示如何在本地拉起依赖组件（镜像名称支持通过根目录 `.env` 中的 `POSTGRES_IMAGE`/`ZOOKEEPER_IMAGE`/`KAFKA_IMAGE`/`CAMUNDA_IMAGE` 覆盖，便于切换到私有仓库或镜像加速源）：
-
-```yaml
-version: "3.9"
-services:
-  postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16}
-    environment:
-      POSTGRES_USER: pflow
-      POSTGRES_PASSWORD: pflow
-      POSTGRES_DB: pflow
-    ports:
-      - "5432:5432"
-  zookeeper:
-    image: ${ZOOKEEPER_IMAGE:-bitnami/zookeeper:3.9}
-    environment:
-      ALLOW_ANONYMOUS_LOGIN: "yes"
-    ports:
-      - "2181:2181"
-  kafka:
-    image: ${KAFKA_IMAGE:-bitnami/kafka:3.7}
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-  camunda:
-    image: ${CAMUNDA_IMAGE:-camunda/zeebe:8.3.0}
-    environment:
-      ZEEBE_LOG_LEVEL: info
-      ZEEBE_GATEWAY_NETWORK_HOST: 0.0.0.0
-    ports:
-      - "26500:26500"
-      - "8088:8080"
-```
-
-> 可根据需要扩展 compose 以包含 Jaeger、Prometheus 等观测组件。
-
-### 解决镜像拉取超时/失败
-
-- **优先检查网络**：错误 `Client.Timeout exceeded while awaiting headers` 通常意味着无法连接 Docker Hub。可先尝试 `docker pull ${ZOOKEEPER_IMAGE}` 验证网络连通性。
-- **使用预拉取脚本**：执行 `./scripts/docker/pull-dependencies.sh` 会按 `.env` 或默认值提前拉取依赖镜像，并在补丁标签不存在时自动回退到次版本号标签（如 `3.9.1 -> 3.9`）。脚本运行成功后再执行 `docker compose up -d postgres zookeeper kafka camunda` 可显著降低首次启动失败的概率。
-- **开箱即用的镜像加速 compose 文件**：仓库提供 `docker-compose.mirror.yml`，预置了 [DaoCloud 镜像服务](https://docker.m.daocloud.io) 的镜像地址，可直接配合基础 compose 文件使用：
-
-  ```bash
-  docker compose -f docker-compose.yml -f docker-compose.mirror.yml pull
-  docker compose -f docker-compose.yml -f docker-compose.mirror.yml up -d
-  ```
-
-  如仍需切换到企业内部仓库，可在执行命令前设置环境变量（例如 `POSTGRES_IMAGE`），该覆盖文件同样会读取这些变量。
-- **使用镜像加速器**：在 `~/.docker/config.json` 中增加 `"registry-mirrors": ["https://registry.docker-cn.com", "https://<你的镜像服务域名>"]`，或使用企业内网镜像仓库。
-- **覆盖镜像地址**：根据 `.env.example` 添加 `ZOOKEEPER_IMAGE=<your-registry>/bitnami/zookeeper:3.9` 等变量，重新执行 `docker compose up -d` 即可改用自定义仓库。
-- **手动预拉取**：对网络较慢的环境，可提前运行 `docker pull` 将所需镜像拉取到本地，再执行 compose。
-- **确认镜像标签是否存在**：Bitnami 会定期下线旧补丁版本（例如 `bitnami/kafka:3.6.1`）。为降低风险，本仓库默认使用带次版本号的长期标签（如 `bitnami/zookeeper:3.9`、`bitnami/kafka:3.7`）。你可以在启动前运行 `docker manifest inspect <image>` 或访问镜像仓库标签页确认可用版本，再在 `.env` 中调整 `*_IMAGE` 变量。
-
-## 目录内说明
-
-- `libs/shared`: 统一的配置加载、数据库/消息队列连接、HTTP Server 封装、Prometheus Metrics 注册。
-- `services/*`: 每个服务都使用共享库，以清晰的领域边界组织。
-- `apps/frontend`: React 控制台示例，提供流程编排与工单看板的可视化界面。
-
-## 下一步规划
-
-1. **领域模型持久化**：基于 GORM 定义 Form/Ticket/User 等实体与迁移。
-2. **OpenAPI & 文档化**：在 Gateway 集成 `swaggo/gin-swagger` 自动生成接口文档。
-3. **事件驱动编排**：将 Camunda 任务事件写入 Kafka，Ticket Service 实时更新状态。
-4. **权限系统**：Identity Service 提供 JWT/OIDC 集成与多租户支持。
-5. **前端增强**：接入 React Flow / low-code 编排组件，实现真实拖拽能力。
-
-该仓库提供的骨架代码全部基于开源生态，便于在其上快速迭代业务能力。
+后续规划
+认证增强：集成 JWT/OIDC 实现单点登录、多租户隔离
+流程扩展：对接 Camunda/Zeebe 支持复杂流程（并行网关、定时任务）
+前端优化：引入 React Flow 实现可视化流程拖拽
+监控补充：增加 Prometheus + Grafana 监控（网关 / 队列 / 数据库）
+贡献指南
+Fork 本仓库到个人账号
+创建特性分支：git checkout -b feature/your-feature
+提交代码：git commit -m "add: 新增XX功能"
+推送分支：git push origin feature/your-feature
+提交 Pull Request 到主仓库
+许可证
+本项目基于 MIT License 开源，可自由使用、修改和分发。
