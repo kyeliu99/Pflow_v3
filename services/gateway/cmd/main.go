@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -157,11 +158,8 @@ func (g *gateway) forward(w http.ResponseWriter, r *http.Request, method, target
 		return
 	}
 
-	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
-		if contentType := r.Header.Get("Content-Type"); contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-	}
+	copyRequestHeaders(req.Header, r.Header)
+	appendForwardedHeaders(req.Header, r)
 	req.URL.RawQuery = r.URL.RawQuery
 
 	resp, err := g.client.Do(req)
@@ -286,4 +284,69 @@ func (g *gateway) renderUpstreamError(w http.ResponseWriter, err error) {
 
 func trimTrailingSlash(value string) string {
 	return strings.TrimRight(value, "/")
+}
+
+var hopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Proxy-Connection":    {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+	"Content-Length":      {},
+}
+
+func copyRequestHeaders(dst, src http.Header) {
+	for key, values := range src {
+		canonical := http.CanonicalHeaderKey(key)
+		if _, skip := hopHeaders[canonical]; skip {
+			continue
+		}
+		for _, value := range values {
+			dst.Add(canonical, value)
+		}
+	}
+}
+
+func appendForwardedHeaders(dst http.Header, r *http.Request) {
+	if prior := r.Header.Get("X-Forwarded-For"); prior != "" {
+		dst.Set("X-Forwarded-For", prior)
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+
+	if host != "" {
+		if prior := dst.Get("X-Forwarded-For"); prior != "" {
+			dst.Set("X-Forwarded-For", prior+", "+host)
+		} else {
+			dst.Set("X-Forwarded-For", host)
+		}
+	}
+
+	if r.Host != "" {
+		dst.Set("X-Forwarded-Host", r.Host)
+	}
+
+	if proto := forwardedProto(r); proto != "" {
+		dst.Set("X-Forwarded-Proto", proto)
+	}
+}
+
+func forwardedProto(r *http.Request) string {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		return proto
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.URL != nil && r.URL.Scheme != "" {
+		return r.URL.Scheme
+	}
+	return "http"
 }

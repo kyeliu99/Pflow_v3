@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   AlertIcon,
@@ -23,30 +23,26 @@ import {
 } from "@chakra-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  submitTicket,
-  getTicketSubmission,
+  createTicket,
   listForms,
   listTickets,
   listUsers,
   resolveTicket,
-  TicketSubmission,
   Ticket,
 } from "../lib/api";
 
 const statusLabels: Record<string, string> = {
-  draft: "草稿",
   open: "待处理",
   in_progress: "进行中",
   resolved: "已完成",
-  closed: "已关闭",
+  cancelled: "已取消",
 };
 
 const statusColors: Record<string, string> = {
-  draft: "purple",
   open: "yellow",
   in_progress: "blue",
   resolved: "green",
-  closed: "gray",
+  cancelled: "gray",
 };
 
 const priorityOptions = [
@@ -62,10 +58,6 @@ export default function TicketDashboard() {
   const [formId, setFormId] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [priority, setPriority] = useState("medium");
-  const [activeSubmission, setActiveSubmission] = useState<TicketSubmission | null>(
-    null,
-  );
-  const pollAttemptRef = useRef(0);
 
   const { data: ticketsData, isLoading: ticketsLoading, isError } = useQuery({
     queryKey: ["tickets"],
@@ -85,16 +77,15 @@ export default function TicketDashboard() {
   const users = usersData?.data ?? [];
 
   const createMutation = useMutation({
-    mutationFn: submitTicket,
-    onSuccess: (response) => {
-      pollAttemptRef.current = 0;
-      setActiveSubmission(response.data);
-      toast({
-        status: "info",
-        title: "工单请求已排队",
-        description: "系统正在处理，请稍候…",
-        duration: 4000,
-      });
+    mutationFn: createTicket,
+    onSuccess: () => {
+      toast({ status: "success", title: "工单已创建" });
+      queryClient.invalidateQueries({ queryKey: ["tickets"] });
+      queryClient.invalidateQueries({ queryKey: ["overview"] });
+      setTitle("");
+      setFormId("");
+      setAssigneeId("");
+      setPriority("medium");
     },
     onError: () => {
       toast({ status: "error", title: "创建工单失败", description: "请稍后再试" });
@@ -125,55 +116,6 @@ export default function TicketDashboard() {
     return map;
   }, [forms]);
 
-  useEffect(() => {
-    if (!activeSubmission) {
-      pollAttemptRef.current = 0;
-      return undefined;
-    }
-
-    if (activeSubmission.status === "completed" && activeSubmission.ticket) {
-      toast({ status: "success", title: "工单已创建" });
-      queryClient.invalidateQueries({ queryKey: ["tickets"] });
-      queryClient.invalidateQueries({ queryKey: ["overview"] });
-      setTitle("");
-      setFormId("");
-      setAssigneeId("");
-      setPriority("medium");
-      setActiveSubmission(null);
-      pollAttemptRef.current = 0;
-      return undefined;
-    }
-
-    if (activeSubmission.status === "failed") {
-      toast({
-        status: "error",
-        title: "工单创建失败",
-        description: activeSubmission.errorMessage ?? "请稍后再试",
-      });
-      setActiveSubmission(null);
-      pollAttemptRef.current = 0;
-      return undefined;
-    }
-
-    const delay = Math.min(2000 + pollAttemptRef.current * 500, 5000);
-    const timer = window.setTimeout(async () => {
-      try {
-        const next = await getTicketSubmission(activeSubmission.id);
-        pollAttemptRef.current += 1;
-        setActiveSubmission(next.data);
-      } catch (error) {
-        toast({
-          status: "warning",
-          title: "轮询工单状态失败",
-          description: "将继续尝试获取处理结果",
-        });
-        pollAttemptRef.current += 1;
-      }
-    }, delay);
-
-    return () => window.clearTimeout(timer);
-  }, [activeSubmission, queryClient, toast]);
-
   const handleCreateTicket = () => {
     if (!title.trim()) {
       toast({ status: "warning", title: "请输入工单标题" });
@@ -184,26 +126,13 @@ export default function TicketDashboard() {
       return;
     }
 
-    const generateClientRequestId = () => {
-      if (typeof crypto !== "undefined" && crypto.randomUUID) {
-        return crypto.randomUUID();
-      }
-      return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-    };
-
     createMutation.mutate({
       title: title.trim(),
       formId,
       assigneeId: assigneeId || undefined,
       priority,
-      clientRequestId: generateClientRequestId(),
     });
   };
-
-  const isSubmissionInFlight = Boolean(
-    activeSubmission &&
-      (activeSubmission.status === "pending" || activeSubmission.status === "processing"),
-  );
 
   return (
     <Box borderWidth="1px" borderRadius="md" p={4} bg="white" shadow="sm">
@@ -256,21 +185,15 @@ export default function TicketDashboard() {
         <Button
           colorScheme="blue"
           alignSelf="flex-start"
-          isLoading={createMutation.isPending || isSubmissionInFlight}
+          isLoading={createMutation.isPending}
           onClick={handleCreateTicket}
-          isDisabled={forms.length === 0 || isSubmissionInFlight}
+          isDisabled={forms.length === 0}
         >
           新建工单
         </Button>
         {forms.length === 0 && (
           <Alert status="warning" borderRadius="md">
             <AlertIcon /> 创建工单前，请先创建一个表单。
-          </Alert>
-        )}
-        {isSubmissionInFlight && activeSubmission && (
-          <Alert status="info" borderRadius="md">
-            <AlertIcon /> 正在处理请求（队列状态：
-            {activeSubmission.status === "pending" ? "排队中" : "处理中"}）…
           </Alert>
         )}
       </Stack>
@@ -302,11 +225,7 @@ export default function TicketDashboard() {
               <Tr key={ticket.id}>
                 <Td>{ticket.title}</Td>
                 <Td>{formMap.get(ticket.formId) ?? ticket.formId}</Td>
-                <Td>
-                  {ticket.assigneeId
-                    ? assigneeMap.get(ticket.assigneeId) ?? "未指派"
-                    : "未指派"}
-                </Td>
+                <Td>{assigneeMap.get(ticket.assigneeId) ?? "未指派"}</Td>
                 <Td>
                   <Badge colorScheme={statusColors[ticket.status] ?? "gray"}>
                     {statusLabels[ticket.status] ?? ticket.status}

@@ -1,189 +1,120 @@
-PFlow v3
-** 
- 
- 
- 
-PFlow v3 是面向流程编排与工单协同的端到端解决方案，采用 Django 5 微服务 + React 18 前端 + Go API Gateway 架构，支持服务独立部署扩展，通过网关聚合能力，前端统一接入 BFF 接口。
-目录
-架构概览
-本地环境准备
-数据库初始化
-环境变量配置
-依赖安装
-服务启动
-测试验证
-技术选型评估
-API 约定
-后续规划
-贡献指南
-许可证
-架构概览
-目录结构
-PFlow-v3/
-├── apps/
-│   └── frontend/          # React + Vite 管理控制台（可视化操作）
-├── services/
-│   ├── gateway/           # Go API Gateway（chi 框架，聚合4个领域服务）
-│   ├── form/              # 表单建模服务（管理表单结构/字段）
-│   ├── identity/          # 身份服务（用户/角色权限）
-│   ├── ticket/            # 工单服务（工单生命周期管理）
-│   └── workflow/          # 流程定义服务（流程模板/步骤）
-├── scripts/
-│   └── postgres/init.sql  # 数据库初始化脚本（创建库/角色）
-├── .env.example           # 环境变量示例
-└── README.md              # 项目文档（本文档）
+# PFlow v3
 
-核心技术栈
-模块
-技术选型
-核心作用
-API Gateway
-Go 1.21、chi v5、net/http
-接口聚合、反向代理、高并发
-领域服务
-Django 5、DRF、Celery 5
-业务逻辑、异步任务
-数据存储
-PostgreSQL 16（服务独立库）
-结构化数据持久化
-消息队列
-Redis 7 + Celery Worker
-工单峰值流量处理
-前端
-React 18、Vite、Chakra UI、TanStack Query
-可视化控制台
-依赖管理
-pip、npm、go mod
-多语言依赖管理
+PFlow 是一个面向复杂业务流程的可视化流程搭建工具与工单管理平台。平台以“流程引擎 + 工单系统”的双能力中心设计，支持表单构建、流程编排、工单生命周期管理、权限与协同，同时提供开放的 OpenAPI 与 npm SDK，满足二次开发与深度集成诉求。
 
-本地环境准备
-需提前安装以下依赖（不维护 Docker Compose，容器化可自行编排）：
-Go 1.21+（Gateway 运行）
-Python 3.12+（Django 服务）
-Node.js 18+ + npm（前端依赖）
-PostgreSQL 16（建议企业自建 / 包管理器安装）
-Redis 7+（开启持久化，用于 Celery）
-可选工具：direnv/dotenv（环境变量）、pgcli（PostgreSQL 客户端）
-数据库初始化
-每个服务需独立数据库与角色，通过脚本一键创建（幂等执行）：
-（可选）编辑脚本调整密码 / 库名：
-vim scripts/postgres/init.sql
+## 架构概览
 
-执行脚本（需启动 PostgreSQL，替换 postgres 为管理员账户）：
-psql -U postgres -h 127.0.0.1 -f scripts/postgres/init.sql
+> 所有模块均为独立微服务，便于弹性扩展与独立部署。
 
-脚本作用：
-创建 4 个数据库：pflow_form、pflow_identity、pflow_ticket、pflow_workflow
-为每个库创建同名角色（如 pflow_form 角色拥有对应库权限）
-环境变量配置
-复制示例配置文件：
+```
+apps/
+  frontend/           # React + Vite 控制台，封装 npm SDK 的演示入口
+libs/
+  shared/             # Go 共享库：配置、数据库、消息队列、HTTP、观测等
+services/
+  gateway/            # API 聚合 & BFF，统一认证、路由、OpenAPI 暴露点
+  identity/           # 身份与权限管理，面向多角色的 RBAC 能力
+  form/               # 拖拽式表单模型存储与版本管理
+  workflow/           # Camunda 8 (Zeebe) 流程编排适配层
+  ticket/             # 工单调度、状态同步、事件消费
+```
+
+技术选型遵循“全部基于成熟开源生态”：
+
+- **流程引擎**：Camunda 8 / Zeebe 客户端 (`github.com/camunda/zeebe`)
+- **编程语言**：Go 1.21 (微服务)、TypeScript + React 18 (前端)
+- **通信协议**：HTTP/JSON + Kafka 事件流 (`github.com/segmentio/kafka-go`)
+- **数据持久化**：PostgreSQL (`gorm.io/gorm` + `gorm.io/driver/postgres`)
+- **配置与观测**：`github.com/joho/godotenv`、Prometheus 客户端 (`github.com/prometheus/client_golang`)
+
+## 本地开发与调试
+
+### 1. 依赖准备
+
+- Go 1.21+
+- Node.js 18+
+- PostgreSQL 15+（可部署在本地或远程服务器）
+- `psql` 命令行工具（随 PostgreSQL 一并安装）
+- （可选）Docker & Docker Compose —— 仅当你希望容器化依赖服务时使用
+
+### 2. 初始化数据库（无需 Docker）
+
+在已有 PostgreSQL 实例的前提下，可直接执行仓库自带的引导脚本创建默认账号与数据库：
+
+```bash
+# 以本地 PostgreSQL 默认超级用户为例，提前导出密码（或使用 .pgpass 文件）
+export PGPASSWORD=<postgres 密码>
+
+# 可通过以下环境变量覆盖连接信息：
+#   POSTGRES_HOST / POSTGRES_PORT          —— PostgreSQL 地址（默认 localhost:5432）
+#   POSTGRES_SUPERUSER                    —— 具有创建数据库权限的账号（默认 postgres）
+#   POSTGRES_DB                           —— 连接时使用的数据库（默认 postgres）
+./scripts/postgres/bootstrap.sh
+```
+
+`bootstrap.sh` 会重复执行 `scripts/postgres/init.sql` 并确保幂等：
+
+- 若不存在 `pflow` 角色则自动创建并设置口令 `pflow`
+- 若不存在 `pflow` 数据库则创建并将所有权授予 `pflow`
+
+如无法使用脚本，也可以手动执行以下 SQL：
+
+```sql
+CREATE ROLE pflow LOGIN PASSWORD 'pflow';
+CREATE DATABASE pflow OWNER pflow;
+```
+
+完成后，微服务即可使用 `.env` 中的默认 `POSTGRES_DSN=postgres://pflow:pflow@localhost:5432/pflow?sslmode=disable` 进行连接。
+
+### 3. （可选）使用 Docker Compose 启动依赖
+
+若希望在本地快速拉起一套隔离的依赖服务，可继续使用项目根目录的 `docker-compose.yml`（示例见后文）。
+
+- 默认 compose 会一次性拉起 PostgreSQL、Zookeeper、Kafka 与 Camunda：
+
+```bash
+docker compose up -d postgres zookeeper kafka camunda
+```
+
+- PostgreSQL 容器启动时同样会自动运行 `scripts/postgres/init.sql`，确保创建 `pflow` 数据库与登录角色。
+- 如果此前已经启动过旧版本的容器导致卷内缺少该角色，可执行 `docker compose down -v postgres` 清理卷后再启动，或手动进入容器执行  `psql -U postgres -c "CREATE ROLE pflow LOGIN PASSWORD 'pflow';"` 与 `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE pflow TO pflow;"`。
+
+- PostgreSQL 暴露在 `5432`
+- Kafka 暴露在 `9092`（容器互联 `kafka:9092`，宿主机备用监听 `localhost:9092`）
+- Camunda/Zeebe 网关暴露在 `26500`（gRPC）与 `8088`（控制台）
+- 如果某个容器启动失败，可通过 `docker compose logs <service>` 查看原因
+
+### 4. 配置环境变量
+
+将示例配置复制为仓库根目录的 `.env`（一次即可）：
+
+```bash
 cp .env.example .env
+```
 
-关键变量说明（未设置则用默认值）：
-服务
-核心变量（示例值）
-Go Gateway
-GATEWAY_PORT=8000、FORM_SERVICE_URL=http://localhost:8001
-Form 服务
-FORM_DATABASE_URL=postgresql://pflow_form:pflow_form@localhost:5432/pflow_form
-Identity 服务
-IDENTITY_DATABASE_URL=postgresql://pflow_identity:pflow_identity@localhost:5432/pflow_identity
-Ticket 服务
-TICKET_BROKER_URL=redis://localhost:6379/0、TICKET_QUEUE_NAME=ticket_submissions
-Workflow 服务
-WORKFLOW_DATABASE_URL=postgresql://pflow_workflow:pflow_workflow@localhost:5432/pflow_workflow
-前端
-VITE_GATEWAY_URL=http://localhost:8000/api/
+所有微服务都会自动读取仓库根目录的 `.env`、`.env.local` 以及 `.env.d/*.env` 文件，无需再为每个服务重复拷贝。
 
-依赖安装
-1. Go Gateway 依赖
-cd services/gateway
-go mod tidy  # 自动安装 chi 等依赖
+> `.env.example` 不再预设统一的 `HTTP_PORT`，各服务会在未显式设置时使用推荐端口（Gateway=8080、Form=8081、Identity=8082、Ticket=8083、Workflow=8084）。如需修改，请在运行命令前通过环境变量覆盖，例如 `HTTP_PORT=9000 go run ./cmd/main.go`。
 
-2. Django 领域服务依赖（4 个服务操作相同）
-以 Form 服务为例，其他服务（identity/ticket/workflow）重复此步骤：
-# 进入服务目录
-cd services/form
-# 创建并激活虚拟环境
-python3 -m venv .venv
-source .venv/bin/activate  # Windows：.venv\Scripts\activate
-# 安装依赖
-pip install --upgrade pip
-pip install -r requirements.txt
+如需加载额外的配置文件，可通过 `PFLOW_ENV_FILES` 指定逗号分隔的路径列表。
 
-3. 前端依赖
-cd apps/frontend
-npm install  # 安装 React、Vite 等依赖
+> `.env` 中的 `POSTGRES_IMAGE`、`ZOOKEEPER_IMAGE`、`KAFKA_IMAGE`、`CAMUNDA_IMAGE` 变量可按需指向企业私有仓库或镜像加速服务，以避免 Docker Hub 拉取受限。
 
-服务启动
-建议打开多个终端，按以下顺序启动（Gateway 依赖其他服务地址）：
-1. 启动 Redis（先启动，用于 Celery 队列）
-# macOS（brew）
-brew services start redis
-# Linux（systemd）
-sudo systemctl start redis
-# 验证：返回 PONG 即正常
-redis-cli ping
+### 5. 启动微服务
 
-2. 启动 Celery Worker（Ticket 服务目录）
-cd services/ticket
-source .venv/bin/activate
-# 监听工单队列，输出 info 级日志
-celery -A ticket_service worker --loglevel=info
+建议在独立终端中分别启动各个服务（默认端口见下表，可按需覆盖 `HTTP_PORT`）：
 
-⚠️ 保持终端运行，关闭则无法处理工单任务
-3. 启动 Django 领域服务
-Form 服务（端口 8001）
-cd services/form
-source .venv/bin/activate
-export FORM_DATABASE_URL=postgresql://pflow_form:pflow_form@localhost:5432/pflow_form
-python manage.py runserver 0.0.0.0:8001
+| 服务 | 目录 | 默认端口 | 启动命令 |
+| --- | --- | --- | --- |
+| API Gateway | `services/gateway` | 8080 | `go run ./cmd/main.go` |
+| Form Service | `services/form` | 8081 | `go run ./cmd/main.go` |
+| Identity Service | `services/identity` | 8082 | `go run ./cmd/main.go` |
+| Ticket Service | `services/ticket` | 8083 | `go run ./cmd/main.go` |
+| Workflow Service | `services/workflow` | 8084 | `go run ./cmd/main.go` |
 
-Identity 服务（端口 8002）
-cd services/identity
-source .venv/bin/activate
-export IDENTITY_DATABASE_URL=postgresql://pflow_identity:pflow_identity@localhost:5432/pflow_identity
-python manage.py runserver 0.0.0.0:8002
+启动顺序建议为：先运行依赖基础设施与 API Gateway，再依次启动领域服务。可借助 `air`、`fresh` 等热加载工具提升开发效率。
 
-Ticket 服务（端口 8003）
-cd services/ticket
-source .venv/bin/activate
-export TICKET_DATABASE_URL=postgresql://pflow_ticket:pflow_ticket@localhost:5432/pflow_ticket
-export TICKET_BROKER_URL=redis://localhost:6379/0
-python manage.py runserver 0.0.0.0:8003
-
-Workflow 服务（端口 8004）
-cd services/workflow
-source .venv/bin/activate
-export WORKFLOW_DATABASE_URL=postgresql://pflow_workflow:pflow_workflow@localhost:5432/pflow_workflow
-python manage.py runserver 0.0.0.0:8004
-
-4. 启动 Go API Gateway（端口 8000）
-cd services/gateway
-# 导出环境变量（或通过 .env 加载）
-export GATEWAY_PORT=8000
-export FORM_SERVICE_URL=http://localhost:8001
-export IDENTITY_SERVICE_URL=http://localhost:8002
-export TICKET_SERVICE_URL=http://localhost:8003
-export WORKFLOW_SERVICE_URL=http://localhost:8004
-# 启动网关
-go run ./cmd/gateway
-# 验证：访问 http://localhost:8000/healthz，返回 OK 即正常
-
-5. 启动前端控制台（端口 5173）
-cd apps/frontend
-# 可选：修改网关地址
-# export VITE_GATEWAY_URL=http://your-gateway-url/api/
-npm run dev
-# 访问 http://localhost:5173 进入控制台
-
-测试验证
-1. Django 服务接口测试
-# 进入目标服务目录（如 form）
-cd services/form
-source .venv/bin/activate
-# 执行单元测试（验证接口/模型逻辑）
-python manage.py test
+### 6. 前端控制台
 
 2. 前端构建验证
 cd apps/frontend
