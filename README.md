@@ -116,97 +116,49 @@ cp .env.example .env
 
 ### 6. 前端控制台
 
-```bash
+2. 前端构建验证
 cd apps/frontend
-npm install
-npm run dev
-```
+# 验证代码可正常打包（无语法错误）
+npm run build
 
-前端默认代理 `/api` 到 `http://localhost:8080`，可在 `vite.config.ts` 调整。
+技术选型评估
+采用「Go 网关 + Django 业务服务」混合方案，核心考量：
+Go Gateway 优势：
+单二进制部署，适合横向扩展
+goroutine 并发模型，高并发处理优于 Python
+依赖精简（chi + 标准库），维护成本低
+Django 领域服务优势：
+数据密集型业务效率高：ORM、序列化、权限开箱即用
+生态成熟：Celery 异步、Django Admin 调试便捷
+团队适配：降低前端 / 运营学习成本
+整体平衡：
+Go 负责「流量入口」高并发，Django 负责「业务核心」快速建模
+依赖均为官方 / 主流开源项目，无个人仓库风险
+API 约定
+所有接口通过 Gateway 统一访问（前缀 /api），核心接口：
+服务
+接口路径与功能
+表单服务
+GET/POST/PUT/DELETE /api/forms/（表单 CRUD）
+身份服务
+GET/POST /api/users/（用户管理）、GET /api/roles/（角色查询）
+工单服务
+POST /api/tickets/submissions/（异步创建工单）GET /api/tickets/submissions/{id}/（查询状态）POST /api/tickets/{id}/resolve/（完成工单）
+流程服务
+GET/POST /api/workflows/（流程 CRUD）POST /api/workflows/{id}/publish/（激活流程）
+网关聚合
+GET /api/overview/（服务数据聚合）GET /api/tickets/queue-metrics/（队列监控）GET /api/healthz（健康检查）
 
-## OpenAPI 与 SDK
-
-- Gateway 统一暴露 REST API，后续可整合 `swagger`/`openapi` 生成器。
-- `apps/frontend/src/lib/api.ts` 提供 axios 封装示例。
-- 可在 npm 包中导出 React hooks（例如 `useForms`, `useTickets`）进一步封装。
-
-## Docker Compose 示例
-
-以下 compose 片段演示如何在本地拉起依赖组件（镜像名称支持通过根目录 `.env` 中的 `POSTGRES_IMAGE`/`ZOOKEEPER_IMAGE`/`KAFKA_IMAGE`/`CAMUNDA_IMAGE` 覆盖，便于切换到私有仓库或镜像加速源）：
-
-```yaml
-version: "3.9"
-services:
-  postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16}
-    environment:
-      POSTGRES_USER: pflow
-      POSTGRES_PASSWORD: pflow
-      POSTGRES_DB: pflow
-    ports:
-      - "5432:5432"
-  zookeeper:
-    image: ${ZOOKEEPER_IMAGE:-bitnami/zookeeper:3.9}
-    environment:
-      ALLOW_ANONYMOUS_LOGIN: "yes"
-    ports:
-      - "2181:2181"
-  kafka:
-    image: ${KAFKA_IMAGE:-bitnami/kafka:3.7}
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-  camunda:
-    image: ${CAMUNDA_IMAGE:-camunda/zeebe:8.3.0}
-    environment:
-      ZEEBE_LOG_LEVEL: info
-      ZEEBE_GATEWAY_NETWORK_HOST: 0.0.0.0
-    ports:
-      - "26500:26500"
-      - "8088:8080"
-```
-
-> 可根据需要扩展 compose 以包含 Jaeger、Prometheus 等观测组件。
-
-### 解决镜像拉取超时/失败
-
-- **优先检查网络**：错误 `Client.Timeout exceeded while awaiting headers` 通常意味着无法连接 Docker Hub。可先尝试 `docker pull ${ZOOKEEPER_IMAGE}` 验证网络连通性。
-- **使用预拉取脚本**：执行 `./scripts/docker/pull-dependencies.sh` 会按 `.env` 或默认值提前拉取依赖镜像，并在补丁标签不存在时自动回退到次版本号标签（如 `3.9.1 -> 3.9`）。脚本运行成功后再执行 `docker compose up -d postgres zookeeper kafka camunda` 可显著降低首次启动失败的概率。
-- **开箱即用的镜像加速 compose 文件**：仓库提供 `docker-compose.mirror.yml`，预置了 [DaoCloud 镜像服务](https://docker.m.daocloud.io) 的镜像地址，可直接配合基础 compose 文件使用：
-
-  ```bash
-  docker compose -f docker-compose.yml -f docker-compose.mirror.yml pull
-  docker compose -f docker-compose.yml -f docker-compose.mirror.yml up -d
-  ```
-
-  如仍需切换到企业内部仓库，可在执行命令前设置环境变量（例如 `POSTGRES_IMAGE`），该覆盖文件同样会读取这些变量。
-- **使用镜像加速器**：在 `~/.docker/config.json` 中增加 `"registry-mirrors": ["https://registry.docker-cn.com", "https://<你的镜像服务域名>"]`，或使用企业内网镜像仓库。
-- **覆盖镜像地址**：根据 `.env.example` 添加 `ZOOKEEPER_IMAGE=<your-registry>/bitnami/zookeeper:3.9` 等变量，重新执行 `docker compose up -d` 即可改用自定义仓库。
-- **手动预拉取**：对网络较慢的环境，可提前运行 `docker pull` 将所需镜像拉取到本地，再执行 compose。
-- **确认镜像标签是否存在**：Bitnami 会定期下线旧补丁版本（例如 `bitnami/kafka:3.6.1`）。为降低风险，本仓库默认使用带次版本号的长期标签（如 `bitnami/zookeeper:3.9`、`bitnami/kafka:3.7`）。你可以在启动前运行 `docker manifest inspect <image>` 或访问镜像仓库标签页确认可用版本，再在 `.env` 中调整 `*_IMAGE` 变量。
-
-## 目录内说明
-
-- `libs/shared`: 统一的配置加载、数据库/消息队列连接、HTTP Server 封装、Prometheus Metrics 注册。
-- `services/*`: 每个服务都使用共享库，以清晰的领域边界组织。
-- `apps/frontend`: React 控制台示例，提供流程编排与工单看板的可视化界面。
-
-## 下一步规划
-
-1. **领域模型持久化**：基于 GORM 定义 Form/Ticket/User 等实体与迁移。
-2. **OpenAPI & 文档化**：在 Gateway 集成 `swaggo/gin-swagger` 自动生成接口文档。
-3. **事件驱动编排**：将 Camunda 任务事件写入 Kafka，Ticket Service 实时更新状态。
-4. **权限系统**：Identity Service 提供 JWT/OIDC 集成与多租户支持。
-5. **前端增强**：接入 React Flow / low-code 编排组件，实现真实拖拽能力。
-
-该仓库提供的骨架代码全部基于开源生态，便于在其上快速迭代业务能力。
+后续规划
+认证增强：集成 JWT/OIDC 实现单点登录、多租户隔离
+流程扩展：对接 Camunda/Zeebe 支持复杂流程（并行网关、定时任务）
+前端优化：引入 React Flow 实现可视化流程拖拽
+监控补充：增加 Prometheus + Grafana 监控（网关 / 队列 / 数据库）
+贡献指南
+Fork 本仓库到个人账号
+创建特性分支：git checkout -b feature/your-feature
+提交代码：git commit -m "add: 新增XX功能"
+推送分支：git push origin feature/your-feature
+提交 Pull Request 到主仓库
+许可证
+本项目基于 MIT License 开源，可自由使用、修改和分发。
