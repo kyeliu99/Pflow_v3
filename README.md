@@ -88,7 +88,9 @@ Gateway 及各领域微服务即是通过上述组件拼装而成，这意味着
 ./scripts/postgres/run-local.sh stop
 ```
 
-脚本会自动向 `postgresql.conf` 写入监听地址、端口与连接数量，同时在 `pg_hba.conf` 中启用本地密码登录。若系统尚未安装 PostgreSQL，可通过以下方式获取官方发行版：
+脚本会自动向 `postgresql.conf` 写入监听地址、端口与连接数量，同时在 `pg_hba.conf` 中启用本地密码登录。首次执行时会自动检测可用的语言环境：若当前系统的默认语言包不可用，将依次尝试 `en_US.UTF-8`、`en_US.utf8`、`C.UTF-8` 与 `C`，避免出现“无法为本地化语言环境找到合适的文本搜索配置”的错误提示。若希望强制使用特定语言包，可在运行脚本前设置 `POSTGRES_LOCALE` 环境变量。
+
+若系统尚未安装 PostgreSQL，可通过以下方式获取官方发行版：
 
 - macOS（Homebrew）：`brew install postgresql@16`
 - Debian/Ubuntu：`sudo apt install postgresql postgresql-contrib`
@@ -98,6 +100,7 @@ Gateway 及各领域微服务即是通过上述组件拼装而成，这意味着
 
 - `POSTGRES_PORT`：监听端口（默认 5432）
 - `POSTGRES_SUPERUSER` / `POSTGRES_PASSWORD`：初始化的超级用户（默认 postgres/postgres）
+- `POSTGRES_LOCALE`：初始化数据目录时使用的语言环境（默认自动探测）
 - `PFLOW_POSTGRES_DATA_DIR`：数据目录（默认 `.data/postgres`）
 - `PFLOW_POSTGRES_SKIP_BOOTSTRAP=1`：跳过自动执行 `scripts/postgres/bootstrap.sh`
 

@@ -7,6 +7,7 @@ PORT="${POSTGRES_PORT:-5432}"
 HOST="${POSTGRES_HOST:-127.0.0.1}"
 SUPERUSER="${POSTGRES_SUPERUSER:-postgres}"
 PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+LOCALE="${POSTGRES_LOCALE:-}"
 LOG_FILE="${DATA_DIR}/postgres.log"
 BIN_DIR="${PFLOW_POSTGRES_BIN_DIR:-}"
 SKIP_BOOTSTRAP="${PFLOW_POSTGRES_SKIP_BOOTSTRAP:-}"
@@ -23,6 +24,51 @@ require_command() {
   fi
 }
 
+locale_available() {
+  local candidate="$1"
+  if [[ -z "${candidate}" ]]; then
+    return 1
+  fi
+
+  if command -v locale >/dev/null 2>&1; then
+    local normalised
+    normalised="$(printf '%s' "${candidate}" | tr '[:upper:]' '[:lower:]')"
+    if locale -a 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -Fxq "${normalised}"; then
+      return 0
+    fi
+    return 1
+  fi
+
+  # If the `locale` command is unavailable we optimistically assume the value
+  # is acceptable; `initdb` will surface a concrete error if not.
+  return 0
+}
+
+choose_locale() {
+  local requested="${LOCALE}"
+  if [[ -n "${requested}" ]]; then
+    if locale_available "${requested}"; then
+      echo "${requested}"
+      return 0
+    fi
+    echo "requested locale '${requested}' is not available on this system" >&2
+    echo "please install it or unset POSTGRES_LOCALE to allow automatic detection" >&2
+    exit 1
+  fi
+
+  local candidates=("${LC_ALL:-}" "${LANG:-}" "en_US.UTF-8" "en_US.utf8" "C.UTF-8" "C")
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if locale_available "${candidate}"; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  # Final fallback that works even when locale -a is missing.
+  echo "C"
+}
+
 start_cluster() {
   mkdir -p "${DATA_DIR}"
 
@@ -36,7 +82,10 @@ start_cluster() {
     printf '%s\n' "${PASSWORD}" >"${pwfile}"
 
     echo "initialising postgres data directory at ${DATA_DIR}"
-    initdb -D "${DATA_DIR}" -U "${SUPERUSER}" --pwfile="${pwfile}" --auth-host=scram-sha-256 --auth-local=trust >/dev/null
+    local initdb_locale
+    initdb_locale="$(choose_locale)"
+    echo "using initdb locale: ${initdb_locale}"
+    initdb -D "${DATA_DIR}" -U "${SUPERUSER}" --pwfile="${pwfile}" --auth-host=scram-sha-256 --auth-local=trust --encoding=UTF8 --locale="${initdb_locale}" >/dev/null
 
     {
       echo "listen_addresses = '${HOST}'"
